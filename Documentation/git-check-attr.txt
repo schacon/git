@@ -9,8 +9,8 @@ git-check-attr - Display gitattributes information
 SYNOPSIS
 --------
 [verse]
-'git check-attr' attr... [--] pathname...
-'git check-attr' --stdin [-z] attr... < <list-of-paths>
+'git check-attr' [-a | --all | attr...] [--] pathname...
+'git check-attr' --stdin [-z] [-a | --all | attr...]
 
 DESCRIPTION
 -----------
@@ -19,23 +19,40 @@ For every pathname, this command will list if each attribute is 'unspecified',
 
 OPTIONS
 -------
+-a, --all::
+	List all attributes that are associated with the specified
+	paths.  If this option is used, then 'unspecified' attributes
+	will not be included in the output.
+
+--cached::
+	Consider `.gitattributes` in the index only, ignoring the working tree.
+
 --stdin::
-	Read file names from stdin instead of from the command-line.
+	Read pathnames from the standard input, one per line,
+	instead of from the command-line.
 
 -z::
-	Only meaningful with `--stdin`; paths are separated with a
-	NUL character instead of a linefeed character.
+	The output format is modified to be machine-parseable.
+	If `--stdin` is also given, input paths are separated
+	with a NUL character instead of a linefeed character.
 
 \--::
 	Interpret all preceding arguments as attributes and all following
-	arguments as path names. If not supplied, only the first argument will
-	be treated as an attribute.
+	arguments as path names.
+
+If none of `--stdin`, `--all`, or `--` is used, the first argument
+will be treated as an attribute and the rest of the arguments as
+pathnames.
 
 OUTPUT
 ------
 
 The output is of the form:
 <path> COLON SP <attribute> COLON SP <info> LF
+
+unless `-z` is in effect, in which case NUL is used as delimiter:
+<path> NUL <attribute> NUL <info> NUL
+
 
 <path> is the path of a file being queried, <attribute> is an attribute
 being queried and <info> can be either:
@@ -44,6 +61,11 @@ being queried and <info> can be either:
 'unset';;	when the attribute is defined as false.
 'set';;		when the attribute is defined as true.
 <value>;;	when a value has been assigned to the attribute.
+
+Buffering happens as documented under the `GIT_FLUSH` option in
+linkgit:git[1].  The caller is responsible for avoiding deadlocks
+caused by overfilling an input buffer or reading from an empty output
+buffer.
 
 EXAMPLES
 --------
@@ -69,6 +91,13 @@ org/example/MyClass.java: diff: java
 org/example/MyClass.java: myAttr: set
 ---------------
 
+* Listing all attributes for a file:
+---------------
+$ git check-attr --all -- org/example/MyClass.java
+org/example/MyClass.java: diff: java
+org/example/MyClass.java: myAttr: set
+---------------
+
 * Listing an attribute for multiple files:
 ---------------
 $ git check-attr myAttr -- org/example/MyClass.java org/example/NoMyAttr.java
@@ -85,15 +114,6 @@ README: caveat: unspecified
 SEE ALSO
 --------
 linkgit:gitattributes[5].
-
-
-Author
-------
-Written by Junio C Hamano <gitster@pobox.com>
-
-Documentation
---------------
-Documentation by James Bowes.
 
 GIT
 ---

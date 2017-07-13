@@ -1,27 +1,23 @@
 . ./test-lib.sh
 
-remotes_git_svn=remotes/git""-svn
-git_svn_id=git""-svn-id
-
 if test -n "$NO_SVN_TESTS"
 then
-	say 'skipping git svn tests, NO_SVN_TESTS defined'
+	skip_all='skipping git svn tests, NO_SVN_TESTS defined'
 	test_done
 fi
 if ! test_have_prereq PERL; then
-	say 'skipping git svn tests, perl not available'
+	skip_all='skipping git svn tests, perl not available'
 	test_done
 fi
 
 GIT_DIR=$PWD/.git
 GIT_SVN_DIR=$GIT_DIR/svn/refs/remotes/git-svn
 SVN_TREE=$GIT_SVN_DIR/svn-tree
-PERL=${PERL:-perl}
 
 svn >/dev/null 2>&1
 if test $? -ne 1
 then
-    say 'skipping git svn tests, svn not found'
+    skip_all='skipping git svn tests, svn not found'
     test_done
 fi
 
@@ -30,7 +26,7 @@ export svnrepo
 svnconf=$PWD/svnconf
 export svnconf
 
-$PERL -w -e "
+perl -w -e "
 use SVN::Core;
 use SVN::Repos;
 \$SVN::Core::VERSION gt '1.1.0' or exit(42);
@@ -40,13 +36,12 @@ x=$?
 if test $x -ne 0
 then
 	if test $x -eq 42; then
-		err='Perl SVN libraries must be >= 1.1.0'
+		skip_all='Perl SVN libraries must be >= 1.1.0'
 	elif test $x -eq 41; then
-		err='svnadmin failed to create fsfs repository'
+		skip_all='svnadmin failed to create fsfs repository'
 	else
-		err='Perl SVN libraries not found or unusable, skipping test'
+		skip_all='Perl SVN libraries not found or unusable'
 	fi
-	say "$err"
 	test_done
 fi
 
@@ -70,70 +65,28 @@ svn_cmd () {
 	svn "$orig_svncmd" --config-dir "$svnconf" "$@"
 }
 
-for d in \
-	"$SVN_HTTPD_PATH" \
-	/usr/sbin/apache2 \
-	/usr/sbin/httpd \
-; do
-	if test -f "$d"
-	then
-		SVN_HTTPD_PATH="$d"
-		break
-	fi
-done
-for d in \
-	"$SVN_HTTPD_MODULE_PATH" \
-	/usr/lib/apache2/modules \
-	/usr/libexec/apache2 \
-; do
-	if test -d "$d"
-	then
-		SVN_HTTPD_MODULE_PATH="$d"
-		break
-	fi
-done
+maybe_start_httpd () {
+	loc=${1-svn}
 
-start_httpd () {
-	repo_base_path="$1"
-	if test -z "$SVN_HTTPD_PORT"
-	then
-		echo >&2 'SVN_HTTPD_PORT is not defined!'
-		return
-	fi
-	if test -z "$repo_base_path"
-	then
-		repo_base_path=svn
-	fi
-
-	mkdir "$GIT_DIR"/logs
-
-	cat > "$GIT_DIR/httpd.conf" <<EOF
-ServerName "git svn test"
-ServerRoot "$GIT_DIR"
-DocumentRoot "$GIT_DIR"
-PidFile "$GIT_DIR/httpd.pid"
-LockFile logs/accept.lock
-Listen 127.0.0.1:$SVN_HTTPD_PORT
-LoadModule dav_module $SVN_HTTPD_MODULE_PATH/mod_dav.so
-LoadModule dav_svn_module $SVN_HTTPD_MODULE_PATH/mod_dav_svn.so
-<Location /$repo_base_path>
-	DAV svn
-	SVNPath "$rawsvnrepo"
-</Location>
-EOF
-	"$SVN_HTTPD_PATH" -f "$GIT_DIR"/httpd.conf -k start
-	svnrepo="http://127.0.0.1:$SVN_HTTPD_PORT/$repo_base_path"
-}
-
-stop_httpd () {
-	test -z "$SVN_HTTPD_PORT" && return
-	"$SVN_HTTPD_PATH" -f "$GIT_DIR"/httpd.conf -k stop
+	test_tristate GIT_SVN_TEST_HTTPD
+	case $GIT_SVN_TEST_HTTPD in
+	true)
+		. "$TEST_DIRECTORY"/lib-httpd.sh
+		LIB_HTTPD_SVN="$loc"
+		start_httpd
+		;;
+	*)
+		stop_httpd () {
+			: noop
+		}
+		;;
+	esac
 }
 
 convert_to_rev_db () {
-	$PERL -w -- - "$@" <<\EOF
+	perl -w -- - "$@" <<\EOF
 use strict;
-@ARGV == 2 or die "Usage: convert_to_rev_db <input> <output>";
+@ARGV == 2 or die "usage: convert_to_rev_db <input> <output>";
 open my $wr, '+>', $ARGV[1] or die "$!: couldn't open: $ARGV[1]";
 open my $rd, '<', $ARGV[0] or die "$!: couldn't open: $ARGV[0]";
 my $size = (stat($rd))[7];
@@ -159,7 +112,7 @@ EOF
 require_svnserve () {
     if test -z "$SVNSERVE_PORT"
     then
-        say 'skipping svnserve test. (set $SVNSERVE_PORT to enable)'
+	skip_all='skipping svnserve test. (set $SVNSERVE_PORT to enable)'
         test_done
     fi
 }
@@ -171,3 +124,15 @@ start_svnserve () {
              --listen-host 127.0.0.1 &
 }
 
+prepare_a_utf8_locale () {
+	a_utf8_locale=$(locale -a | sed -n '/\.[uU][tT][fF]-*8$/{
+	p
+	q
+}')
+	if test -n "$a_utf8_locale"
+	then
+		test_set_prereq UTF8
+	else
+		say "# UTF-8 locale not available, some tests are skipped"
+	fi
+}

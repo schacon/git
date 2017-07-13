@@ -6,13 +6,12 @@
 *
 */
 
-#include "cache.h"
-#include "exec_cmd.h"
+#include "builtin.h"
 
 #define BLKSIZE 512
 
 static const char pack_redundant_usage[] =
-"git pack-redundant [ --verbose ] [ --alt-odb ] < --all | <.pack filename> ...>";
+"git pack-redundant [--verbose] [--alt-odb] (--all | <filename.pack>...)";
 
 static int load_all_packs, verbose, alt_odb;
 
@@ -54,7 +53,7 @@ static inline struct llist_item *llist_item_get(void)
 		free_nodes = free_nodes->next;
 	} else {
 		int i = 1;
-		new = xmalloc(sizeof(struct llist_item) * BLKSIZE);
+		ALLOC_ARRAY(new, BLKSIZE);
 		for (; i < BLKSIZE; i++)
 			llist_item_put(&new[i]);
 	}
@@ -302,14 +301,14 @@ static void pll_free(struct pll *l)
  */
 static struct pll * get_permutations(struct pack_list *list, int n)
 {
-	struct pll *subset, *ret = NULL, *new_pll = NULL, *pll;
+	struct pll *subset, *ret = NULL, *new_pll = NULL;
 
 	if (list == NULL || pack_list_size(list) < n || n == 0)
 		return NULL;
 
 	if (n == 1) {
 		while (list) {
-			new_pll = xmalloc(sizeof(pll));
+			new_pll = xmalloc(sizeof(*new_pll));
 			new_pll->pl = NULL;
 			pack_list_insert(&new_pll->pl, list);
 			new_pll->next = ret;
@@ -322,7 +321,7 @@ static struct pll * get_permutations(struct pack_list *list, int n)
 	while (list->next) {
 		subset = get_permutations(list->next, n - 1);
 		while (subset) {
-			new_pll = xmalloc(sizeof(pll));
+			new_pll = xmalloc(sizeof(*new_pll));
 			new_pll->pl = subset->pl;
 			pack_list_insert(&new_pll->pl, list);
 			new_pll->next = ret;
@@ -443,6 +442,7 @@ static void minimize(struct pack_list **min)
 	/* return if there are no objects missing from the unique set */
 	if (missing->size == 0) {
 		*min = unique;
+		free(missing);
 		return;
 	}
 

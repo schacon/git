@@ -42,7 +42,7 @@ test_expect_success 'git diff' '
 '
 
 test_expect_success 'tree' '
-	tree=$(git write-tree 2>/dev/null)
+	tree=$(git write-tree 2>/dev/null) &&
 	test 8988da15d077d4829fc51d8544c097def6644dbb = $tree
 '
 
@@ -154,17 +154,20 @@ test_expect_success 'git show-branch' '
 cat > resolve.expect << EOF
 Updating VARIABLE..VARIABLE
 FASTFORWARD (no commit created; -m option ignored)
- example |    1 +
- hello   |    1 +
- 2 files changed, 2 insertions(+), 0 deletions(-)
+ example | 1 +
+ hello   | 1 +
+ 2 files changed, 2 insertions(+)
 EOF
 
 test_expect_success 'git resolve' '
 	git checkout mybranch &&
 	git merge -m "Merge upstream changes." master |
 		sed -e "1s/[0-9a-f]\{7\}/VARIABLE/g" \
-		-e "s/^Fast[- ]forward /FASTFORWARD /" >resolve.output &&
-	test_cmp resolve.expect resolve.output
+		-e "s/^Fast[- ]forward /FASTFORWARD /" >resolve.output
+'
+
+test_expect_success 'git resolve output' '
+	test_i18ncmp resolve.expect resolve.output
 '
 
 cat > show-branch2.expect << EOF

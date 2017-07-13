@@ -120,6 +120,7 @@ test_expect_success 'add notes with simple M command' '
 
 test_tick
 cat >input <<INPUT_END
+feature notes
 commit refs/notes/test
 committer $GIT_COMMITTER_NAME <$GIT_COMMITTER_EMAIL> $GIT_COMMITTER_DATE
 data <<COMMIT
@@ -255,13 +256,18 @@ EOF
 
 INPUT_END
 
+whitespace="    "
+
 cat >expect <<EXPECT_END
     fourth commit
     pre-prefix of note for fourth commit
+$whitespace
     prefix of note for fourth commit
+$whitespace
     third note for fourth commit
     third commit
     prefix of note for third commit
+$whitespace
     third note for third commit
     second commit
     third note for second commit
@@ -477,6 +483,48 @@ test_expect_success 'verify that lots of notes trigger a fanout scheme' '
 
 '
 
+# Create another notes tree from the one above
+SP=" "
+cat >>input <<INPUT_END
+commit refs/heads/other_commits
+committer $GIT_COMMITTER_NAME <$GIT_COMMITTER_EMAIL> $GIT_COMMITTER_DATE
+data <<COMMIT
+commit #$(($num_commit + 1))
+COMMIT
+
+from refs/heads/many_commits
+M 644 inline file
+data <<EOF
+file contents in commit #$(($num_commit + 1))
+EOF
+
+commit refs/notes/other_notes
+committer $GIT_COMMITTER_NAME <$GIT_COMMITTER_EMAIL> $GIT_COMMITTER_DATE
+data <<COMMIT
+committing one more note on a tree imported from a previous notes tree
+COMMIT
+
+M 040000 $(git log --no-walk --format=%T refs/notes/many_notes)$SP
+N inline :$(($num_commit + 1))
+data <<EOF
+note for commit #$(($num_commit + 1))
+EOF
+INPUT_END
+
+test_expect_success 'verify that importing a notes tree respects the fanout scheme' '
+	git fast-import <input &&
+
+	# None of the entries in the top-level notes tree should be a full SHA1
+	git ls-tree --name-only refs/notes/other_notes |
+	while read path
+	do
+		if test $(expr length "$path") -ge 40
+		then
+			return 1
+		fi
+	done
+'
+
 cat >>expect_non-note1 << EOF
 This is not a note, but rather a regular file residing in a notes tree
 EOF
@@ -499,9 +547,63 @@ test_expect_success 'verify that non-notes are untouched by a fanout change' '
 	test_cmp expect_non-note3 actual
 
 '
+
+# Change the notes for the three top commits
+test_tick
+cat >input <<INPUT_END
+commit refs/notes/many_notes
+committer $GIT_COMMITTER_NAME <$GIT_COMMITTER_EMAIL> $GIT_COMMITTER_DATE
+data <<COMMIT
+changing notes for the top three commits
+COMMIT
+from refs/notes/many_notes^0
+INPUT_END
+
+rm expect
+i=$num_commits
+j=0
+while test $j -lt 3
+do
+	cat >>input <<INPUT_END
+N inline refs/heads/many_commits~$j
+data <<EOF
+changed note for commit #$i
+EOF
+INPUT_END
+	cat >>expect <<EXPECT_END
+    commit #$i
+    changed note for commit #$i
+EXPECT_END
+	i=$(($i - 1))
+	j=$(($j + 1))
+done
+
+test_expect_success 'change a few existing notes' '
+
+	git fast-import <input &&
+	GIT_NOTES_REF=refs/notes/many_notes git log -n3 refs/heads/many_commits |
+	    grep "^    " > actual &&
+	test_cmp expect actual
+
+'
+
+test_expect_success 'verify that changing notes respect existing fanout' '
+
+	# None of the entries in the top-level notes tree should be a full SHA1
+	git ls-tree --name-only refs/notes/many_notes |
+	while read path
+	do
+		if test $(expr length "$path") -ge 40
+		then
+			return 1
+		fi
+	done
+
+'
+
 remaining_notes=10
 test_tick
-cat >>input <<INPUT_END
+cat >input <<INPUT_END
 commit refs/notes/many_notes
 committer $GIT_COMMITTER_NAME <$GIT_COMMITTER_EMAIL> $GIT_COMMITTER_DATE
 data <<COMMIT
@@ -510,12 +612,11 @@ COMMIT
 from refs/notes/many_notes^0
 INPUT_END
 
-i=$remaining_notes
-while test $i -lt $num_commits
+i=$(($num_commits - $remaining_notes))
+for sha1 in $(git rev-list -n $i refs/heads/many_commits)
 do
-	i=$(($i + 1))
 	cat >>input <<INPUT_END
-N 0000000000000000000000000000000000000000 :$i
+N 0000000000000000000000000000000000000000 $sha1
 INPUT_END
 done
 

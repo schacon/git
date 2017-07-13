@@ -12,7 +12,7 @@ constructor dialog {} {
 
 	make_dialog top w
 	wm withdraw $w
-	wm title $top [append "[appname] ([reponame]): " [mc "Rename Branch"]]
+	wm title $top [mc "%s (%s): Rename Branch" [appname] [reponame]]
 	if {$top ne {.}} {
 		wm geometry $top "+[winfo rootx .]+[winfo rooty .]"
 	}
@@ -53,7 +53,7 @@ constructor dialog {} {
 			return 1
 		}
 
-	grid $w.rename.oldname_l $w.rename.oldname_m -sticky w  -padx {0 5}
+	grid $w.rename.oldname_l $w.rename.oldname_m -sticky we -padx {0 5}
 	grid $w.rename.newname_l $w.rename.newname_t -sticky we -padx {0 5}
 	grid columnconfigure $w.rename 1 -weight 1
 	pack $w.rename -anchor nw -fill x -pady 5 -padx 5

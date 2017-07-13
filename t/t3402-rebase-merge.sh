@@ -33,6 +33,7 @@ test_expect_success setup '
 	tr "[a-z]" "[A-Z]" <original >newfile &&
 	git add newfile &&
 	git commit -a -m"side edits further." &&
+	git branch second-side &&
 
 	tr "[a-m]" "[A-M]" <original >newfile &&
 	rm -f original &&
@@ -41,11 +42,12 @@ test_expect_success setup '
 	git branch test-rebase side &&
 	git branch test-rebase-pick side &&
 	git branch test-reference-pick side &&
+	git branch test-conflicts side &&
 	git checkout -b test-merge side
 '
 
 test_expect_success 'reference merge' '
-	git merge -s recursive "reference merge" HEAD master
+	git merge -s recursive -m "reference merge" master
 '
 
 PRE_REBASE=$(git rev-parse test-rebase)
@@ -72,6 +74,24 @@ test_expect_success 'merge and rebase should match' '
 test_expect_success 'rebase the other way' '
 	git reset --hard master &&
 	git rebase --merge side
+'
+
+test_expect_success 'rebase -Xtheirs' '
+	git checkout -b conflicting master~2 &&
+	echo "AB $T" >> original &&
+	git commit -mconflicting original &&
+	git rebase -Xtheirs master &&
+	grep AB original &&
+	! grep 11 original
+'
+
+test_expect_success 'rebase -Xtheirs from orphan' '
+	git checkout --orphan orphan-conflicting master~2 &&
+	echo "AB $T" >> original &&
+	git commit -morphan-conflicting original &&
+	git rebase -Xtheirs master &&
+	grep AB original &&
+	! grep 11 original
 '
 
 test_expect_success 'merge and rebase should match' '
@@ -106,6 +126,40 @@ test_expect_success 'picking rebase' '
 		echo "$g"
 		(exit 1)
 	esac
+'
+
+test_expect_success 'rebase -s funny -Xopt' '
+	test_when_finished "rm -fr test-bin funny.was.run" &&
+	mkdir test-bin &&
+	cat >test-bin/git-merge-funny <<-EOF &&
+	#!$SHELL_PATH
+	case "\$1" in --opt) ;; *) exit 2 ;; esac
+	shift &&
+	>funny.was.run &&
+	exec git merge-recursive "\$@"
+	EOF
+	chmod +x test-bin/git-merge-funny &&
+	git reset --hard &&
+	git checkout -b test-funny master^ &&
+	test_commit funny &&
+	(
+		PATH=./test-bin:$PATH
+		git rebase -s funny -Xopt master
+	) &&
+	test -f funny.was.run
+'
+
+test_expect_success 'rebase --skip works with two conflicts in a row' '
+	git checkout second-side  &&
+	tr "[A-Z]" "[a-z]" <newfile >tmp &&
+	mv tmp newfile &&
+	git commit -a -m"edit conflicting with side" &&
+	tr "[d-f]" "[D-F]" <newfile >tmp &&
+	mv tmp newfile &&
+	git commit -a -m"another edit conflicting with side" &&
+	test_must_fail git rebase --merge test-conflicts &&
+	test_must_fail git rebase --skip &&
+	git rebase --skip
 '
 
 test_done

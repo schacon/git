@@ -1,4 +1,5 @@
 #include "cache.h"
+#include "config.h"
 #include "run-command.h"
 #include "sigchain.h"
 
@@ -6,46 +7,41 @@
 #define DEFAULT_PAGER "less"
 #endif
 
-/*
- * This is split up from the rest of git so that we can do
- * something different on Windows.
- */
+static struct child_process pager_process = CHILD_PROCESS_INIT;
+static const char *pager_program;
 
-static int spawned_pager;
-
-#ifndef WIN32
-static void pager_preexec(void)
+static void wait_for_pager(int in_signal)
 {
-	/*
-	 * Work around bug in "less" by not starting it until we
-	 * have real input
-	 */
-	fd_set in;
-
-	FD_ZERO(&in);
-	FD_SET(0, &in);
-	select(1, &in, NULL, &in, NULL);
-}
-#endif
-
-static const char *pager_argv[] = { NULL, NULL };
-static struct child_process pager_process;
-
-static void wait_for_pager(void)
-{
-	fflush(stdout);
-	fflush(stderr);
+	if (!in_signal) {
+		fflush(stdout);
+		fflush(stderr);
+	}
 	/* signal EOF to pager */
 	close(1);
 	close(2);
-	finish_command(&pager_process);
+	if (in_signal)
+		finish_command_in_signal(&pager_process);
+	else
+		finish_command(&pager_process);
+}
+
+static void wait_for_pager_atexit(void)
+{
+	wait_for_pager(0);
 }
 
 static void wait_for_pager_signal(int signo)
 {
-	wait_for_pager();
+	wait_for_pager(1);
 	sigchain_pop(signo);
 	raise(signo);
+}
+
+static int core_pager_config(const char *var, const char *value, void *data)
+{
+	if (!strcmp(var, "core.pager"))
+		return git_config_string(&pager_program, var, value);
+	return 0;
 }
 
 const char *git_pager(int stdout_is_tty)
@@ -58,17 +54,51 @@ const char *git_pager(int stdout_is_tty)
 	pager = getenv("GIT_PAGER");
 	if (!pager) {
 		if (!pager_program)
-			git_config(git_default_config, NULL);
+			read_early_config(core_pager_config, NULL);
 		pager = pager_program;
 	}
 	if (!pager)
 		pager = getenv("PAGER");
 	if (!pager)
 		pager = DEFAULT_PAGER;
-	else if (!*pager || !strcmp(pager, "cat"))
+	if (!*pager || !strcmp(pager, "cat"))
 		pager = NULL;
 
 	return pager;
+}
+
+static void setup_pager_env(struct argv_array *env)
+{
+	const char **argv;
+	int i;
+	char *pager_env = xstrdup(PAGER_ENV);
+	int n = split_cmdline(pager_env, &argv);
+
+	if (n < 0)
+		die("malformed build-time PAGER_ENV: %s",
+			split_cmdline_strerror(n));
+
+	for (i = 0; i < n; i++) {
+		char *cp = strchr(argv[i], '=');
+
+		if (!cp)
+			die("malformed build-time PAGER_ENV");
+
+		*cp = '\0';
+		if (!getenv(argv[i])) {
+			*cp = '=';
+			argv_array_push(env, argv[i]);
+		}
+	}
+	free(pager_env);
+	free(argv);
+}
+
+void prepare_pager_args(struct child_process *pager_process, const char *pager)
+{
+	argv_array_push(&pager_process->args, pager);
+	pager_process->use_shell = 1;
+	setup_pager_env(&pager_process->env_array);
 }
 
 void setup_pager(void)
@@ -78,20 +108,18 @@ void setup_pager(void)
 	if (!pager)
 		return;
 
-	spawned_pager = 1; /* means we are emitting to terminal */
+	/*
+	 * force computing the width of the terminal before we redirect
+	 * the standard output to the pager.
+	 */
+	(void) term_columns();
+
+	setenv("GIT_PAGER_IN_USE", "true", 1);
 
 	/* spawn the pager */
-	pager_argv[0] = pager;
-	pager_process.use_shell = 1;
-	pager_process.argv = pager_argv;
+	prepare_pager_args(&pager_process, pager);
 	pager_process.in = -1;
-	if (!getenv("LESS")) {
-		static const char *env[] = { "LESS=FRSX", NULL };
-		pager_process.env = env;
-	}
-#ifndef WIN32
-	pager_process.preexec_cb = pager_preexec;
-#endif
+	argv_array_push(&pager_process.env_array, "GIT_PAGER_IN_USE");
 	if (start_command(&pager_process))
 		return;
 
@@ -103,16 +131,93 @@ void setup_pager(void)
 
 	/* this makes sure that the parent terminates after the pager */
 	sigchain_push_common(wait_for_pager_signal);
-	atexit(wait_for_pager);
+	atexit(wait_for_pager_atexit);
 }
 
 int pager_in_use(void)
 {
-	const char *env;
+	return git_env_bool("GIT_PAGER_IN_USE", 0);
+}
 
-	if (spawned_pager)
-		return 1;
+/*
+ * Return cached value (if set) or $COLUMNS environment variable (if
+ * set and positive) or ioctl(1, TIOCGWINSZ).ws_col (if positive),
+ * and default to 80 if all else fails.
+ */
+int term_columns(void)
+{
+	static int term_columns_at_startup;
 
-	env = getenv("GIT_PAGER_IN_USE");
-	return env ? git_config_bool("GIT_PAGER_IN_USE", env) : 0;
+	char *col_string;
+	int n_cols;
+
+	if (term_columns_at_startup)
+		return term_columns_at_startup;
+
+	term_columns_at_startup = 80;
+
+	col_string = getenv("COLUMNS");
+	if (col_string && (n_cols = atoi(col_string)) > 0)
+		term_columns_at_startup = n_cols;
+#ifdef TIOCGWINSZ
+	else {
+		struct winsize ws;
+		if (!ioctl(1, TIOCGWINSZ, &ws) && ws.ws_col)
+			term_columns_at_startup = ws.ws_col;
+	}
+#endif
+
+	return term_columns_at_startup;
+}
+
+/*
+ * How many columns do we need to show this number in decimal?
+ */
+int decimal_width(uintmax_t number)
+{
+	int width;
+
+	for (width = 1; number >= 10; width++)
+		number /= 10;
+	return width;
+}
+
+struct pager_command_config_data {
+	const char *cmd;
+	int want;
+	char *value;
+};
+
+static int pager_command_config(const char *var, const char *value, void *vdata)
+{
+	struct pager_command_config_data *data = vdata;
+	const char *cmd;
+
+	if (skip_prefix(var, "pager.", &cmd) && !strcmp(cmd, data->cmd)) {
+		int b = git_config_maybe_bool(var, value);
+		if (b >= 0)
+			data->want = b;
+		else {
+			data->want = 1;
+			data->value = xstrdup(value);
+		}
+	}
+
+	return 0;
+}
+
+/* returns 0 for "no pager", 1 for "use pager", and -1 for "not specified" */
+int check_pager_config(const char *cmd)
+{
+	struct pager_command_config_data data;
+
+	data.cmd = cmd;
+	data.want = -1;
+	data.value = NULL;
+
+	read_early_config(pager_command_config, &data);
+
+	if (data.value)
+		pager_program = data.value;
+	return data.want;
 }

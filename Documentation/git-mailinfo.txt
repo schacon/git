@@ -8,7 +8,8 @@ git-mailinfo - Extracts patch and authorship from a single e-mail message
 
 SYNOPSIS
 --------
-'git mailinfo' [-k|-b] [-u | --encoding=<encoding> | -n] [--scissors] <msg> <patch>
+[verse]
+'git mailinfo' [-k|-b] [-u | --encoding=<encoding> | -n] [--[no-]scissors] <msg> <patch>
 
 
 DESCRIPTION
@@ -24,13 +25,24 @@ command directly.  See linkgit:git-am[1] instead.
 OPTIONS
 -------
 -k::
-	Usually the program 'cleans up' the Subject: header line
-	to extract the title line for the commit log message,
-	among which (1) remove 'Re:' or 're:', (2) leading
-	whitespaces, (3) '[' up to ']', typically '[PATCH]', and
-	then prepends "[PATCH] ".  This flag forbids this
-	munging, and is most useful when used to read back
-	'git format-patch -k' output.
+	Usually the program removes email cruft from the Subject:
+	header line to extract the title line for the commit log
+	message.  This option prevents this munging, and is most
+	useful when used to read back 'git format-patch -k' output.
++
+Specifically, the following are removed until none of them remain:
++
+--
+*	Leading and trailing whitespace.
+
+*	Leading `Re:`, `re:`, and `:`.
+
+*	Leading bracketed strings (between `[` and `]`, usually
+	`[PATCH]`).
+--
++
+Finally, runs of whitespace are normalized to a single ASCII space
+character.
 
 -b::
 	When -k is not in effect, all leading strings bracketed with '['
@@ -54,6 +66,11 @@ conversion, even with this flag.
 -n::
 	Disable all charset re-coding of the metadata.
 
+-m::
+--message-id::
+	Copy the Message-ID header at the end of the commit message.  This
+	is useful in order to associate commits with mailing list discussions.
+
 --scissors::
 	Remove everything in body before a scissors line.  A line that
 	mainly consists of scissors (either ">8" or "8<") and perforation
@@ -68,7 +85,7 @@ with comments and suggestions on the message you are responding to, and to
 conclude it with a patch submission, separating the discussion and the
 beginning of the proposed commit log message with a scissors line.
 +
-This can enabled by default with the configuration option mailinfo.scissors.
+This can be enabled by default with the configuration option mailinfo.scissors.
 
 --no-scissors::
 	Ignore scissors lines. Useful for overriding mailinfo.scissors settings.
@@ -79,17 +96,6 @@ This can enabled by default with the configuration option mailinfo.scissors.
 
 <patch>::
 	The patch extracted from e-mail.
-
-
-Author
-------
-Written by Linus Torvalds <torvalds@osdl.org> and
-Junio C Hamano <gitster@pobox.com>
-
-
-Documentation
---------------
-Documentation by Junio C Hamano and the git-list <git@vger.kernel.org>.
 
 GIT
 ---

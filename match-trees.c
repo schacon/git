@@ -47,78 +47,69 @@ static int score_matches(unsigned mode1, unsigned mode2, const char *path)
 	return score;
 }
 
-/*
- * Inspect two trees, and give a score that tells how similar they are.
- */
-static int score_trees(const unsigned char *hash1, const unsigned char *hash2)
+static void *fill_tree_desc_strict(struct tree_desc *desc,
+				   const struct object_id *hash)
 {
-	struct tree_desc one;
-	struct tree_desc two;
-	void *one_buf, *two_buf;
-	int score = 0;
+	void *buffer;
 	enum object_type type;
 	unsigned long size;
 
-	one_buf = read_sha1_file(hash1, &type, &size);
-	if (!one_buf)
-		die("unable to read tree (%s)", sha1_to_hex(hash1));
+	buffer = read_sha1_file(hash->hash, &type, &size);
+	if (!buffer)
+		die("unable to read tree (%s)", oid_to_hex(hash));
 	if (type != OBJ_TREE)
-		die("%s is not a tree", sha1_to_hex(hash1));
-	init_tree_desc(&one, one_buf, size);
-	two_buf = read_sha1_file(hash2, &type, &size);
-	if (!two_buf)
-		die("unable to read tree (%s)", sha1_to_hex(hash2));
-	if (type != OBJ_TREE)
-		die("%s is not a tree", sha1_to_hex(hash2));
-	init_tree_desc(&two, two_buf, size);
-	while (one.size | two.size) {
-		const unsigned char *elem1 = elem1;
-		const unsigned char *elem2 = elem2;
-		const char *path1 = path1;
-		const char *path2 = path2;
-		unsigned mode1 = mode1;
-		unsigned mode2 = mode2;
+		die("%s is not a tree", oid_to_hex(hash));
+	init_tree_desc(desc, buffer, size);
+	return buffer;
+}
+
+static int base_name_entries_compare(const struct name_entry *a,
+				     const struct name_entry *b)
+{
+	return base_name_compare(a->path, tree_entry_len(a), a->mode,
+				 b->path, tree_entry_len(b), b->mode);
+}
+
+/*
+ * Inspect two trees, and give a score that tells how similar they are.
+ */
+static int score_trees(const struct object_id *hash1, const struct object_id *hash2)
+{
+	struct tree_desc one;
+	struct tree_desc two;
+	void *one_buf = fill_tree_desc_strict(&one, hash1);
+	void *two_buf = fill_tree_desc_strict(&two, hash2);
+	int score = 0;
+
+	for (;;) {
+		struct name_entry e1, e2;
+		int got_entry_from_one = tree_entry(&one, &e1);
+		int got_entry_from_two = tree_entry(&two, &e2);
 		int cmp;
 
-		if (one.size)
-			elem1 = tree_entry_extract(&one, &path1, &mode1);
-		if (two.size)
-			elem2 = tree_entry_extract(&two, &path2, &mode2);
-
-		if (!one.size) {
-			/* two has more entries */
-			score += score_missing(mode2, path2);
-			update_tree_entry(&two);
-			continue;
-		}
-		if (!two.size) {
+		if (got_entry_from_one && got_entry_from_two)
+			cmp = base_name_entries_compare(&e1, &e2);
+		else if (got_entry_from_one)
 			/* two lacks this entry */
-			score += score_missing(mode1, path1);
-			update_tree_entry(&one);
-			continue;
-		}
-		cmp = base_name_compare(path1, strlen(path1), mode1,
-					path2, strlen(path2), mode2);
-		if (cmp < 0) {
+			cmp = -1;
+		else if (got_entry_from_two)
+			/* two has more entries */
+			cmp = 1;
+		else
+			break;
+
+		if (cmp < 0)
 			/* path1 does not appear in two */
-			score += score_missing(mode1, path1);
-			update_tree_entry(&one);
-			continue;
-		}
-		else if (cmp > 0) {
+			score += score_missing(e1.mode, e1.path);
+		else if (cmp > 0)
 			/* path2 does not appear in one */
-			score += score_missing(mode2, path2);
-			update_tree_entry(&two);
-			continue;
-		}
-		else if (hashcmp(elem1, elem2))
+			score += score_missing(e2.mode, e2.path);
+		else if (oidcmp(e1.oid, e2.oid))
 			/* they are different */
-			score += score_differs(mode1, mode2, path1);
+			score += score_differs(e1.mode, e2.mode, e1.path);
 		else
 			/* same subtree or blob */
-			score += score_matches(mode1, mode2, path1);
-		update_tree_entry(&one);
-		update_tree_entry(&two);
+			score += score_matches(e1.mode, e2.mode, e1.path);
 	}
 	free(one_buf);
 	free(two_buf);
@@ -128,28 +119,19 @@ static int score_trees(const unsigned char *hash1, const unsigned char *hash2)
 /*
  * Match one itself and its subtrees with two and pick the best match.
  */
-static void match_trees(const unsigned char *hash1,
-			const unsigned char *hash2,
+static void match_trees(const struct object_id *hash1,
+			const struct object_id *hash2,
 			int *best_score,
 			char **best_match,
 			const char *base,
 			int recurse_limit)
 {
 	struct tree_desc one;
-	void *one_buf;
-	enum object_type type;
-	unsigned long size;
-
-	one_buf = read_sha1_file(hash1, &type, &size);
-	if (!one_buf)
-		die("unable to read tree (%s)", sha1_to_hex(hash1));
-	if (type != OBJ_TREE)
-		die("%s is not a tree", sha1_to_hex(hash1));
-	init_tree_desc(&one, one_buf, size);
+	void *one_buf = fill_tree_desc_strict(&one, hash1);
 
 	while (one.size) {
 		const char *path;
-		const unsigned char *elem;
+		const struct object_id *elem;
 		unsigned mode;
 		int score;
 
@@ -158,17 +140,12 @@ static void match_trees(const unsigned char *hash1,
 			goto next;
 		score = score_trees(elem, hash2);
 		if (*best_score < score) {
-			char *newpath;
-			newpath = xmalloc(strlen(base) + strlen(path) + 1);
-			sprintf(newpath, "%s%s", base, path);
 			free(*best_match);
-			*best_match = newpath;
+			*best_match = xstrfmt("%s%s", base, path);
 			*best_score = score;
 		}
 		if (recurse_limit) {
-			char *newbase;
-			newbase = xmalloc(strlen(base) + strlen(path) + 2);
-			sprintf(newbase, "%s%s/", base, path);
+			char *newbase = xstrfmt("%s%s/", base, path);
 			match_trees(elem, hash2, best_score, best_match,
 				    newbase, recurse_limit - 1);
 			free(newbase);
@@ -200,13 +177,10 @@ static int splice_tree(const unsigned char *hash1,
 	enum object_type type;
 	int status;
 
-	subpath = strchr(prefix, '/');
-	if (!subpath)
-		toplen = strlen(prefix);
-	else {
-		toplen = subpath - prefix;
+	subpath = strchrnul(prefix, '/');
+	toplen = subpath - prefix;
+	if (*subpath)
 		subpath++;
-	}
 
 	buf = read_sha1_file(hash1, &type, &sz);
 	if (!buf)
@@ -217,15 +191,15 @@ static int splice_tree(const unsigned char *hash1,
 	while (desc.size) {
 		const char *name;
 		unsigned mode;
-		const unsigned char *sha1;
+		const struct object_id *oid;
 
-		sha1 = tree_entry_extract(&desc, &name, &mode);
+		oid = tree_entry_extract(&desc, &name, &mode);
 		if (strlen(name) == toplen &&
 		    !memcmp(name, prefix, toplen)) {
 			if (!S_ISDIR(mode))
 				die("entry %s in tree %s is not a tree",
 				    name, sha1_to_hex(hash1));
-			rewrite_here = (unsigned char *) sha1;
+			rewrite_here = (unsigned char *) oid->hash;
 			break;
 		}
 		update_tree_entry(&desc);
@@ -233,7 +207,7 @@ static int splice_tree(const unsigned char *hash1,
 	if (!rewrite_here)
 		die("entry %.*s not found in tree %s",
 		    toplen, prefix, sha1_to_hex(hash1));
-	if (subpath) {
+	if (*subpath) {
 		status = splice_tree(rewrite_here, subpath, hash2, subtree);
 		if (status)
 			return status;
@@ -255,9 +229,9 @@ static int splice_tree(const unsigned char *hash1,
  * other hand, it could cover tree one and we might need to pick a
  * subtree of it.
  */
-void shift_tree(const unsigned char *hash1,
-		const unsigned char *hash2,
-		unsigned char *shifted,
+void shift_tree(const struct object_id *hash1,
+		const struct object_id *hash2,
+		struct object_id *shifted,
 		int depth_limit)
 {
 	char *add_prefix;
@@ -288,7 +262,7 @@ void shift_tree(const unsigned char *hash1,
 	match_trees(hash2, hash1, &del_score, &del_prefix, "", depth_limit);
 
 	/* Assume we do not have to do any shifting */
-	hashcpy(shifted, hash2);
+	oidcpy(shifted, hash2);
 
 	if (add_score < del_score) {
 		/* We need to pick a subtree of two */
@@ -297,16 +271,16 @@ void shift_tree(const unsigned char *hash1,
 		if (!*del_prefix)
 			return;
 
-		if (get_tree_entry(hash2, del_prefix, shifted, &mode))
+		if (get_tree_entry(hash2->hash, del_prefix, shifted->hash, &mode))
 			die("cannot find path %s in tree %s",
-			    del_prefix, sha1_to_hex(hash2));
+			    del_prefix, oid_to_hex(hash2));
 		return;
 	}
 
 	if (!*add_prefix)
 		return;
 
-	splice_tree(hash1, add_prefix, hash2, shifted);
+	splice_tree(hash1->hash, add_prefix, hash2->hash, shifted->hash);
 }
 
 /*
@@ -314,22 +288,22 @@ void shift_tree(const unsigned char *hash1,
  * Unfortunately we cannot fundamentally tell which one to
  * be prefixed, as recursive merge can work in either direction.
  */
-void shift_tree_by(const unsigned char *hash1,
-		   const unsigned char *hash2,
-		   unsigned char *shifted,
+void shift_tree_by(const struct object_id *hash1,
+		   const struct object_id *hash2,
+		   struct object_id *shifted,
 		   const char *shift_prefix)
 {
-	unsigned char sub1[20], sub2[20];
+	struct object_id sub1, sub2;
 	unsigned mode1, mode2;
 	unsigned candidate = 0;
 
 	/* Can hash2 be a tree at shift_prefix in tree hash1? */
-	if (!get_tree_entry(hash1, shift_prefix, sub1, &mode1) &&
+	if (!get_tree_entry(hash1->hash, shift_prefix, sub1.hash, &mode1) &&
 	    S_ISDIR(mode1))
 		candidate |= 1;
 
 	/* Can hash1 be a tree at shift_prefix in tree hash2? */
-	if (!get_tree_entry(hash2, shift_prefix, sub2, &mode2) &&
+	if (!get_tree_entry(hash2->hash, shift_prefix, sub2.hash, &mode2) &&
 	    S_ISDIR(mode2))
 		candidate |= 2;
 
@@ -339,19 +313,19 @@ void shift_tree_by(const unsigned char *hash1,
 		int score;
 
 		candidate = 0;
-		score = score_trees(sub1, hash2);
+		score = score_trees(&sub1, hash2);
 		if (score > best_score) {
 			candidate = 1;
 			best_score = score;
 		}
-		score = score_trees(sub2, hash1);
+		score = score_trees(&sub2, hash1);
 		if (score > best_score)
 			candidate = 2;
 	}
 
 	if (!candidate) {
 		/* Neither is plausible -- do not shift */
-		hashcpy(shifted, hash2);
+		oidcpy(shifted, hash2);
 		return;
 	}
 
@@ -360,11 +334,11 @@ void shift_tree_by(const unsigned char *hash1,
 		 * shift tree2 down by adding shift_prefix above it
 		 * to match tree1.
 		 */
-		splice_tree(hash1, shift_prefix, hash2, shifted);
+		splice_tree(hash1->hash, shift_prefix, hash2->hash, shifted->hash);
 	else
 		/*
 		 * shift tree2 up by removing shift_prefix from it
 		 * to match tree1.
 		 */
-		hashcpy(shifted, sub2);
+		oidcpy(shifted, &sub2);
 }

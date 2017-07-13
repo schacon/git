@@ -6,7 +6,7 @@ test_description='subtree merge strategy'
 
 test_expect_success setup '
 
-	s="1 2 3 4 5 6 7 8"
+	s="1 2 3 4 5 6 7 8" &&
 	for i in $s; do echo $i; done >hello &&
 	git add hello &&
 	git commit -m initial &&
@@ -49,7 +49,7 @@ test_expect_success 'setup' '
 
 test_expect_success 'initial merge' '
 	git remote add -f gui ../git-gui &&
-	git merge -s ours --no-commit gui/master &&
+	git merge -s ours --no-commit --allow-unrelated-histories gui/master &&
 	git read-tree --prefix=git-gui/ -u gui/master &&
 	git commit -m "Merge git-gui as our subdirectory" &&
 	git checkout -b work &&

@@ -8,6 +8,7 @@ git-parse-remote - Routines to help parsing remote repository access parameters
 
 SYNOPSIS
 --------
+[verse]
 '. "$(git --exec-path)/git-parse-remote"'
 
 DESCRIPTION
@@ -16,14 +17,6 @@ This script is included in various scripts to supply
 routines to parse files under $GIT_DIR/remotes/ and
 $GIT_DIR/branches/ and configuration variables that are related
 to fetching, pulling and pushing.
-
-Author
-------
-Written by Junio C Hamano.
-
-Documentation
---------------
-Documentation by Junio C Hamano and the git-list <git@vger.kernel.org>.
 
 GIT
 ---

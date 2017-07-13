@@ -7,197 +7,159 @@
 #include "revision.h"
 #include "reachable.h"
 #include "cache-tree.h"
+#include "progress.h"
+#include "list-objects.h"
 
-static void process_blob(struct blob *blob,
-			 struct object_array *p,
-			 struct name_path *path,
-			 const char *name)
+struct connectivity_progress {
+	struct progress *progress;
+	unsigned long count;
+};
+
+static void update_progress(struct connectivity_progress *cp)
 {
-	struct object *obj = &blob->object;
-
-	if (!blob)
-		die("bad blob object");
-	if (obj->flags & SEEN)
-		return;
-	obj->flags |= SEEN;
-	/* Nothing to do, really .. The blob lookup was the important part */
+	cp->count++;
+	if ((cp->count & 1023) == 0)
+		display_progress(cp->progress, cp->count);
 }
 
-static void process_gitlink(const unsigned char *sha1,
-			    struct object_array *p,
-			    struct name_path *path,
-			    const char *name)
+static int add_one_ref(const char *path, const struct object_id *oid,
+		       int flag, void *cb_data)
 {
-	/* I don't think we want to recurse into this, really. */
-}
-
-static void process_tree(struct tree *tree,
-			 struct object_array *p,
-			 struct name_path *path,
-			 const char *name)
-{
-	struct object *obj = &tree->object;
-	struct tree_desc desc;
-	struct name_entry entry;
-	struct name_path me;
-
-	if (!tree)
-		die("bad tree object");
-	if (obj->flags & SEEN)
-		return;
-	obj->flags |= SEEN;
-	if (parse_tree(tree) < 0)
-		die("bad tree object %s", sha1_to_hex(obj->sha1));
-	add_object(obj, p, path, name);
-	me.up = path;
-	me.elem = name;
-	me.elem_len = strlen(name);
-
-	init_tree_desc(&desc, tree->buffer, tree->size);
-
-	while (tree_entry(&desc, &entry)) {
-		if (S_ISDIR(entry.mode))
-			process_tree(lookup_tree(entry.sha1), p, &me, entry.path);
-		else if (S_ISGITLINK(entry.mode))
-			process_gitlink(entry.sha1, p, &me, entry.path);
-		else
-			process_blob(lookup_blob(entry.sha1), p, &me, entry.path);
-	}
-	free(tree->buffer);
-	tree->buffer = NULL;
-}
-
-static void process_tag(struct tag *tag, struct object_array *p, const char *name)
-{
-	struct object *obj = &tag->object;
-	struct name_path me;
-
-	if (obj->flags & SEEN)
-		return;
-	obj->flags |= SEEN;
-
-	me.up = NULL;
-	me.elem = "tag:/";
-	me.elem_len = 5;
-
-	if (parse_tag(tag) < 0)
-		die("bad tag object %s", sha1_to_hex(obj->sha1));
-	if (tag->tagged)
-		add_object(tag->tagged, p, NULL, name);
-}
-
-static void walk_commit_list(struct rev_info *revs)
-{
-	int i;
-	struct commit *commit;
-	struct object_array objects = { 0, 0, NULL };
-
-	/* Walk all commits, process their trees */
-	while ((commit = get_revision(revs)) != NULL)
-		process_tree(commit->tree, &objects, NULL, "");
-
-	/* Then walk all the pending objects, recursively processing them too */
-	for (i = 0; i < revs->pending.nr; i++) {
-		struct object_array_entry *pending = revs->pending.objects + i;
-		struct object *obj = pending->item;
-		const char *name = pending->name;
-		if (obj->type == OBJ_TAG) {
-			process_tag((struct tag *) obj, &objects, name);
-			continue;
-		}
-		if (obj->type == OBJ_TREE) {
-			process_tree((struct tree *)obj, &objects, NULL, name);
-			continue;
-		}
-		if (obj->type == OBJ_BLOB) {
-			process_blob((struct blob *)obj, &objects, NULL, name);
-			continue;
-		}
-		die("unknown pending object %s (%s)", sha1_to_hex(obj->sha1), name);
-	}
-}
-
-static int add_one_reflog_ent(unsigned char *osha1, unsigned char *nsha1,
-		const char *email, unsigned long timestamp, int tz,
-		const char *message, void *cb_data)
-{
+	struct rev_info *revs = (struct rev_info *)cb_data;
 	struct object *object;
-	struct rev_info *revs = (struct rev_info *)cb_data;
 
-	object = parse_object(osha1);
-	if (object)
-		add_pending_object(revs, object, "");
-	object = parse_object(nsha1);
-	if (object)
-		add_pending_object(revs, object, "");
-	return 0;
-}
+	if ((flag & REF_ISSYMREF) && (flag & REF_ISBROKEN)) {
+		warning("symbolic ref is dangling: %s", path);
+		return 0;
+	}
 
-static int add_one_ref(const char *path, const unsigned char *sha1, int flag, void *cb_data)
-{
-	struct object *object = parse_object(sha1);
-	struct rev_info *revs = (struct rev_info *)cb_data;
-
-	if (!object)
-		die("bad object ref: %s:%s", path, sha1_to_hex(sha1));
+	object = parse_object_or_die(oid, path);
 	add_pending_object(revs, object, "");
 
 	return 0;
 }
 
-static int add_one_reflog(const char *path, const unsigned char *sha1, int flag, void *cb_data)
+/*
+ * The traversal will have already marked us as SEEN, so we
+ * only need to handle any progress reporting here.
+ */
+static void mark_object(struct object *obj, const char *name, void *data)
 {
-	for_each_reflog_ent(path, add_one_reflog_ent, cb_data);
+	update_progress(data);
+}
+
+static void mark_commit(struct commit *c, void *data)
+{
+	mark_object(&c->object, NULL, data);
+}
+
+struct recent_data {
+	struct rev_info *revs;
+	timestamp_t timestamp;
+};
+
+static void add_recent_object(const struct object_id *oid,
+			      timestamp_t mtime,
+			      struct recent_data *data)
+{
+	struct object *obj;
+	enum object_type type;
+
+	if (mtime <= data->timestamp)
+		return;
+
+	/*
+	 * We do not want to call parse_object here, because
+	 * inflating blobs and trees could be very expensive.
+	 * However, we do need to know the correct type for
+	 * later processing, and the revision machinery expects
+	 * commits and tags to have been parsed.
+	 */
+	type = sha1_object_info(oid->hash, NULL);
+	if (type < 0)
+		die("unable to get object info for %s", oid_to_hex(oid));
+
+	switch (type) {
+	case OBJ_TAG:
+	case OBJ_COMMIT:
+		obj = parse_object_or_die(oid, NULL);
+		break;
+	case OBJ_TREE:
+		obj = (struct object *)lookup_tree(oid);
+		break;
+	case OBJ_BLOB:
+		obj = (struct object *)lookup_blob(oid);
+		break;
+	default:
+		die("unknown object type for %s: %s",
+		    oid_to_hex(oid), typename(type));
+	}
+
+	if (!obj)
+		die("unable to lookup %s", oid_to_hex(oid));
+
+	add_pending_object(data->revs, obj, "");
+}
+
+static int add_recent_loose(const struct object_id *oid,
+			    const char *path, void *data)
+{
+	struct stat st;
+	struct object *obj = lookup_object(oid->hash);
+
+	if (obj && obj->flags & SEEN)
+		return 0;
+
+	if (stat(path, &st) < 0) {
+		/*
+		 * It's OK if an object went away during our iteration; this
+		 * could be due to a simultaneous repack. But anything else
+		 * we should abort, since we might then fail to mark objects
+		 * which should not be pruned.
+		 */
+		if (errno == ENOENT)
+			return 0;
+		return error_errno("unable to stat %s", oid_to_hex(oid));
+	}
+
+	add_recent_object(oid, st.st_mtime, data);
 	return 0;
 }
 
-static void add_one_tree(const unsigned char *sha1, struct rev_info *revs)
+static int add_recent_packed(const struct object_id *oid,
+			     struct packed_git *p, uint32_t pos,
+			     void *data)
 {
-	struct tree *tree = lookup_tree(sha1);
-	if (tree)
-		add_pending_object(revs, &tree->object, "");
+	struct object *obj = lookup_object(oid->hash);
+
+	if (obj && obj->flags & SEEN)
+		return 0;
+	add_recent_object(oid, p->mtime, data);
+	return 0;
 }
 
-static void add_cache_tree(struct cache_tree *it, struct rev_info *revs)
+int add_unseen_recent_objects_to_traversal(struct rev_info *revs,
+					   timestamp_t timestamp)
 {
-	int i;
+	struct recent_data data;
+	int r;
 
-	if (it->entry_count >= 0)
-		add_one_tree(it->sha1, revs);
-	for (i = 0; i < it->subtree_nr; i++)
-		add_cache_tree(it->down[i]->cache_tree, revs);
+	data.revs = revs;
+	data.timestamp = timestamp;
+
+	r = for_each_loose_object(add_recent_loose, &data,
+				  FOR_EACH_OBJECT_LOCAL_ONLY);
+	if (r)
+		return r;
+	return for_each_packed_object(add_recent_packed, &data,
+				      FOR_EACH_OBJECT_LOCAL_ONLY);
 }
 
-static void add_cache_refs(struct rev_info *revs)
+void mark_reachable_objects(struct rev_info *revs, int mark_reflog,
+			    timestamp_t mark_recent, struct progress *progress)
 {
-	int i;
+	struct connectivity_progress cp;
 
-	read_cache();
-	for (i = 0; i < active_nr; i++) {
-		/*
-		 * The index can contain blobs and GITLINKs, GITLINKs are hashes
-		 * that don't actually point to objects in the repository, it's
-		 * almost guaranteed that they are NOT blobs, so we don't call
-		 * lookup_blob() on them, to avoid populating the hash table
-		 * with invalid information
-		 */
-		if (S_ISGITLINK(active_cache[i]->ce_mode))
-			continue;
-
-		lookup_blob(active_cache[i]->sha1);
-		/*
-		 * We could add the blobs to the pending list, but quite
-		 * frankly, we don't care. Once we've looked them up, and
-		 * added them as objects, we've really done everything
-		 * there is to do for a blob
-		 */
-	}
-	if (active_cache_tree)
-		add_cache_tree(active_cache_tree, revs);
-}
-
-void mark_reachable_objects(struct rev_info *revs, int mark_reflog)
-{
 	/*
 	 * Set up revision parsing, and mark us as being interested
 	 * in all object types, not just commits.
@@ -207,14 +169,20 @@ void mark_reachable_objects(struct rev_info *revs, int mark_reflog)
 	revs->tree_objects = 1;
 
 	/* Add all refs from the index file */
-	add_cache_refs(revs);
+	add_index_objects_to_pending(revs, 0);
 
 	/* Add all external refs */
 	for_each_ref(add_one_ref, revs);
 
+	/* detached HEAD is not included in the list above */
+	head_ref(add_one_ref, revs);
+
 	/* Add all reflog info */
 	if (mark_reflog)
-		for_each_reflog(add_one_reflog, revs);
+		add_reflogs_to_pending(revs, 0);
+
+	cp.progress = progress;
+	cp.count = 0;
 
 	/*
 	 * Set up the revision walk - this will move all commits
@@ -222,5 +190,16 @@ void mark_reachable_objects(struct rev_info *revs, int mark_reflog)
 	 */
 	if (prepare_revision_walk(revs))
 		die("revision walk setup failed");
-	walk_commit_list(revs);
+	traverse_commit_list(revs, mark_commit, mark_object, &cp);
+
+	if (mark_recent) {
+		revs->ignore_missing_links = 1;
+		if (add_unseen_recent_objects_to_traversal(revs, mark_recent))
+			die("unable to mark recent objects");
+		if (prepare_revision_walk(revs))
+			die("revision walk setup failed");
+		traverse_commit_list(revs, mark_commit, mark_object, &cp);
+	}
+
+	display_progress(cp.progress, cp.count);
 }

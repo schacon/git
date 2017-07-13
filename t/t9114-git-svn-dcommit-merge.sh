@@ -37,17 +37,18 @@ EOF
 test_expect_success 'setup svn repository' '
 	svn_cmd co "$svnrepo" mysvnwork &&
 	mkdir -p mysvnwork/trunk &&
-	cd mysvnwork &&
-		big_text_block >> trunk/README &&
+	(
+		cd mysvnwork &&
+		big_text_block >>trunk/README &&
 		svn_cmd add trunk &&
-		svn_cmd ci -m "first commit" trunk &&
-		cd ..
+		svn_cmd ci -m "first commit" trunk
+	)
 	'
 
 test_expect_success 'setup git mirror and merge' '
 	git svn init "$svnrepo" -t tags -T trunk -b branches &&
 	git svn fetch &&
-	git checkout --track -b svn remotes/trunk &&
+	git checkout -b svn remotes/origin/trunk &&
 	git checkout -b merge &&
 	echo new file > new_file &&
 	git add new_file &&
@@ -61,14 +62,14 @@ test_expect_success 'setup git mirror and merge' '
 	echo friend > README &&
 	cat tmp >> README &&
 	git commit -a -m "friend" &&
-	git pull . merge
+	git merge merge
 	'
 
 test_debug 'gitk --all & sleep 1'
 
 test_expect_success 'verify pre-merge ancestry' "
-	test x\`git rev-parse --verify refs/heads/svn^2\` = \
-	     x\`git rev-parse --verify refs/heads/merge\` &&
+	test x\$(git rev-parse --verify refs/heads/svn^2) = \
+	     x\$(git rev-parse --verify refs/heads/merge) &&
 	git cat-file commit refs/heads/svn^ | grep '^friend$'
 	"
 
@@ -79,10 +80,10 @@ test_expect_success 'git svn dcommit merges' "
 test_debug 'gitk --all & sleep 1'
 
 test_expect_success 'verify post-merge ancestry' "
-	test x\`git rev-parse --verify refs/heads/svn\` = \
-	     x\`git rev-parse --verify refs/remotes/trunk \` &&
-	test x\`git rev-parse --verify refs/heads/svn^2\` = \
-	     x\`git rev-parse --verify refs/heads/merge\` &&
+	test x\$(git rev-parse --verify refs/heads/svn) = \
+	     x\$(git rev-parse --verify refs/remotes/origin/trunk) &&
+	test x\$(git rev-parse --verify refs/heads/svn^2) = \
+	     x\$(git rev-parse --verify refs/heads/merge) &&
 	git cat-file commit refs/heads/svn^ | grep '^friend$'
 	"
 

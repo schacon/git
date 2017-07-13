@@ -20,7 +20,7 @@ update_repos() {
 }
 
 repo_fetched() {
-	if test "`git log -1 --pretty=format:%s $1 --`" = "`cat mark`"; then
+	if test "$(git log -1 --pretty=format:%s $1 --)" = "$(cat mark)"; then
 		echo >&2 "repo was fetched: $1"
 		return 0
 	fi
@@ -43,10 +43,10 @@ test_expect_success 'no group updates all' '
 	repo_fetched two
 '
 
-test_expect_success 'nonexistant group produces error' '
-	mark nonexistant &&
+test_expect_success 'nonexistent group produces error' '
+	mark nonexistent &&
 	update_repos &&
-	test_must_fail git remote update nonexistant &&
+	test_must_fail git remote update nonexistent &&
 	! repo_fetched one &&
 	! repo_fetched two
 '

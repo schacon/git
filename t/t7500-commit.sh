@@ -10,7 +10,12 @@ Tests for selected commit options.'
 . ./test-lib.sh
 
 commit_msg_is () {
-	test "`git log --pretty=format:%s%b -1`" = "$1"
+	expect=commit_msg_is.expect
+	actual=commit_msg_is.actual
+
+	printf "%s" "$(git log --pretty=format:%s%b -1)" >"$actual" &&
+	printf "%s" "$1" >"$expect" &&
+	test_i18ncmp "$expect" "$actual"
 }
 
 # A sanity check to see if commit is working at all.
@@ -23,13 +28,20 @@ test_expect_success 'a basic commit in an empty tree should succeed' '
 test_expect_success 'nonexistent template file should return error' '
 	echo changes >> foo &&
 	git add foo &&
-	test_must_fail git commit --template "$PWD"/notexist
+	(
+		GIT_EDITOR="echo hello >\"\$1\"" &&
+		export GIT_EDITOR &&
+		test_must_fail git commit --template "$PWD"/notexist
+	)
 '
 
 test_expect_success 'nonexistent template file in config should return error' '
-	git config commit.template "$PWD"/notexist &&
-	test_must_fail git commit &&
-	git config --unset commit.template
+	test_config commit.template "$PWD"/notexist &&
+	(
+		GIT_EDITOR="echo hello >\"\$1\"" &&
+		export GIT_EDITOR &&
+		test_must_fail git commit
+	)
 '
 
 # From now on we'll use a template file that exists.
@@ -80,14 +92,13 @@ test_expect_success '-t option should be short for --template' '
 
 test_expect_success 'config-specified template should commit' '
 	echo "new template" > "$TEMPLATE" &&
-	git config commit.template "$TEMPLATE" &&
+	test_config commit.template "$TEMPLATE" &&
 	echo "more content" >> foo &&
 	git add foo &&
 	(
 		test_set_editor "$TEST_DIRECTORY"/t7500/add-content &&
 		git commit
 	) &&
-	git config --unset commit.template &&
 	commit_msg_is "new templatecommit message"
 '
 
@@ -108,6 +119,20 @@ test_expect_success 'commit message from file should override template' '
 		git commit --template "$TEMPLATE" --file -
 	) &&
 	commit_msg_is "standard input msg"
+'
+
+cat >"$TEMPLATE" <<\EOF
+
+
+### template
+
+EOF
+test_expect_success 'commit message from template with whitespace issue' '
+	echo "content galore" >>foo &&
+	git add foo &&
+	GIT_EDITOR="$TEST_DIRECTORY"/t7500/add-whitespaced-content git commit \
+		--template "$TEMPLATE" &&
+	commit_msg_is "commit message"
 '
 
 test_expect_success 'using alternate GIT_INDEX_FILE (1)' '
@@ -198,7 +223,8 @@ test_expect_success 'Commit without message is allowed with --allow-empty-messag
 	git add foo &&
 	>empty &&
 	git commit --allow-empty-message <empty &&
-	commit_msg_is ""
+	commit_msg_is "" &&
+	git tag empty-message-commit
 '
 
 test_expect_success 'Commit without message is no-no without --allow-empty-message' '
@@ -213,6 +239,117 @@ test_expect_success 'Commit a message with --allow-empty-message' '
 	git add foo &&
 	git commit --allow-empty-message -m"hello there" &&
 	commit_msg_is "hello there"
+'
+
+test_expect_success 'commit -C empty respects --allow-empty-message' '
+	echo more >>foo &&
+	git add foo &&
+	test_must_fail git commit -C empty-message-commit &&
+	git commit -C empty-message-commit --allow-empty-message &&
+	commit_msg_is ""
+'
+
+commit_for_rebase_autosquash_setup () {
+	echo "first content line" >>foo &&
+	git add foo &&
+	cat >log <<EOF &&
+target message subject line
+
+target message body line 1
+target message body line 2
+EOF
+	git commit -F log &&
+	echo "second content line" >>foo &&
+	git add foo &&
+	git commit -m "intermediate commit" &&
+	echo "third content line" >>foo &&
+	git add foo
+}
+
+test_expect_success 'commit --fixup provides correct one-line commit message' '
+	commit_for_rebase_autosquash_setup &&
+	git commit --fixup HEAD~1 &&
+	commit_msg_is "fixup! target message subject line"
+'
+
+test_expect_success 'commit --squash works with -F' '
+	commit_for_rebase_autosquash_setup &&
+	echo "log message from file" >msgfile &&
+	git commit --squash HEAD~1 -F msgfile  &&
+	commit_msg_is "squash! target message subject linelog message from file"
+'
+
+test_expect_success 'commit --squash works with -m' '
+	commit_for_rebase_autosquash_setup &&
+	git commit --squash HEAD~1 -m "foo bar\nbaz" &&
+	commit_msg_is "squash! target message subject linefoo bar\nbaz"
+'
+
+test_expect_success 'commit --squash works with -C' '
+	commit_for_rebase_autosquash_setup &&
+	git commit --squash HEAD~1 -C HEAD &&
+	commit_msg_is "squash! target message subject lineintermediate commit"
+'
+
+test_expect_success 'commit --squash works with -c' '
+	commit_for_rebase_autosquash_setup &&
+	test_set_editor "$TEST_DIRECTORY"/t7500/edit-content &&
+	git commit --squash HEAD~1 -c HEAD &&
+	commit_msg_is "squash! target message subject lineedited commit"
+'
+
+test_expect_success 'commit --squash works with -C for same commit' '
+	commit_for_rebase_autosquash_setup &&
+	git commit --squash HEAD -C HEAD &&
+	commit_msg_is "squash! intermediate commit"
+'
+
+test_expect_success 'commit --squash works with -c for same commit' '
+	commit_for_rebase_autosquash_setup &&
+	test_set_editor "$TEST_DIRECTORY"/t7500/edit-content &&
+	git commit --squash HEAD -c HEAD &&
+	commit_msg_is "squash! edited commit"
+'
+
+test_expect_success 'commit --squash works with editor' '
+	commit_for_rebase_autosquash_setup &&
+	test_set_editor "$TEST_DIRECTORY"/t7500/add-content &&
+	git commit --squash HEAD~1 &&
+	commit_msg_is "squash! target message subject linecommit message"
+'
+
+test_expect_success 'invalid message options when using --fixup' '
+	echo changes >>foo &&
+	echo "message" >log &&
+	git add foo &&
+	test_must_fail git commit --fixup HEAD~1 --squash HEAD~2 &&
+	test_must_fail git commit --fixup HEAD~1 -C HEAD~2 &&
+	test_must_fail git commit --fixup HEAD~1 -c HEAD~2 &&
+	test_must_fail git commit --fixup HEAD~1 -m "cmdline message" &&
+	test_must_fail git commit --fixup HEAD~1 -F log
+'
+
+cat >expected-template <<EOF
+
+# Please enter the commit message for your changes. Lines starting
+# with '#' will be ignored, and an empty message aborts the commit.
+#
+# Author:    A U Thor <author@example.com>
+#
+# On branch commit-template-check
+# Changes to be committed:
+#	new file:   commit-template-check
+#
+# Untracked files not listed
+EOF
+
+test_expect_success 'new line found before status message in commit template' '
+	git checkout -b commit-template-check &&
+	git reset --hard HEAD &&
+	touch commit-template-check &&
+	git add commit-template-check &&
+	GIT_EDITOR="cat >editor-input" git commit --untracked-files=no --allow-empty-message &&
+	test_i18ncmp expected-template editor-input
 '
 
 test_done

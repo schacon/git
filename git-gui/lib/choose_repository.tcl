@@ -18,11 +18,16 @@ field local_path       {} ; # Where this repository is locally
 field origin_url       {} ; # Where we are cloning from
 field origin_name  origin ; # What we shall call 'origin'
 field clone_type hardlink ; # Type of clone to construct
+field recursive      true ; # Recursive cloning flag
 field readtree_err        ; # Error output from read-tree (if any)
 field sorted_recent       ; # recent repositories (sorted)
 
 constructor pick {} {
 	global M1T M1B use_ttk NS
+
+	if {[set maxrecent [get_config gui.maxrecentrepo]] eq {}} {
+		set maxrecent 10
+	}
 
 	make_dialog top w
 	wm title $top [mc "Git Gui"]
@@ -100,12 +105,17 @@ constructor pick {} {
 	$opts insert end [mc "Clone Existing Repository"] link_clone
 	$opts insert end "\n"
 	if {$m_repo ne {}} {
+		if {[tk windowingsystem] eq "win32"} {
+			set key L
+		} else {
+			set key C
+		}
 		$m_repo add command \
 			-command [cb _next clone] \
-			-accelerator $M1T-C \
+			-accelerator $M1T-$key \
 			-label [mc "Clone..."]
-		bind $top <$M1B-c> [cb _next clone]
-		bind $top <$M1B-C> [cb _next clone]
+		bind $top <$M1B-[string tolower $key]> [cb _next clone]
+		bind $top <$M1B-[string toupper $key]> [cb _next clone]
 	}
 
 	$opts tag conf link_open -foreground blue -underline 1
@@ -143,7 +153,7 @@ constructor pick {} {
 			-background [get_bg_color $w_body.recentlabel] \
 			-wrap none \
 			-width 50 \
-			-height 10
+			-height $maxrecent
 		$w_recentlist tag conf link \
 			-foreground blue \
 			-underline 1
@@ -209,14 +219,6 @@ constructor pick {} {
 	}
 }
 
-proc _home {} {
-	if {[catch {set h $::env(HOME)}]
-		|| ![file isdirectory $h]} {
-		set h .
-	}
-	return $h
-}
-
 method _center {} {
 	set nx [winfo reqwidth $top]
 	set ny [winfo reqheight $top]
@@ -267,7 +269,11 @@ proc _append_recentrepos {path} {
 	git config --global --add gui.recentrepo $path
 	load_config 1
 
-	while {[llength $recent] > 10} {
+	if {[set maxrecent [get_config gui.maxrecentrepo]] eq {}} {
+		set maxrecent 10
+	}
+
+	while {[llength $recent] > $maxrecent} {
 		_unset_recentrepo [lindex $recent 0]
 		set recent [lrange $recent 1 end]
 	}
@@ -289,7 +295,9 @@ method _next {action} {
 	destroy $w_body
 	if {![winfo exists $w_next]} {
 		${NS}::button $w_next -default active
-		pack $w_next -side right -padx 5 -before $w_quit
+		set pos -before
+		if {[tk windowingsystem] eq "win32"} { set pos -after }
+		pack $w_next -side right -padx 5 $pos $w_quit
 	}
 	_do_$action $this
 }
@@ -330,16 +338,31 @@ method _git_init {} {
 	return 1
 }
 
-proc _is_git {path} {
+proc _is_git {path {outdir_var ""}} {
+	if {$outdir_var ne ""} {
+		upvar 1 $outdir_var outdir
+	}
+	if {[file isfile $path]} {
+		set fp [open $path r]
+		gets $fp line
+		close $fp
+		if {[regexp "^gitdir: (.+)$" $line line link_target]} {
+			set path [file join [file dirname $path] $link_target]
+			set path [file normalize $path]
+		}
+	}
+
 	if {[file exists [file join $path HEAD]]
 	 && [file exists [file join $path objects]]
 	 && [file exists [file join $path config]]} {
+		set outdir $path
 		return 1
 	}
 	if {[is_Cygwin]} {
 		if {[file exists [file join $path HEAD]]
 		 && [file exists [file join $path objects.lnk]]
 		 && [file exists [file join $path config.lnk]]} {
+			set outdir $path
 			return 1
 		}
 	}
@@ -415,7 +438,7 @@ method _new_local_path {} {
 	if {$local_path ne {}} {
 		set p [file dirname $local_path]
 	} else {
-		set p [_home]
+		set p [pwd]
 	}
 
 	set p [tk_chooseDirectory \
@@ -518,6 +541,11 @@ method _do_clone {} {
 	foreach r $w_types {
 		pack $r -anchor w
 	}
+	${NS}::checkbutton $args.type_f.recursive \
+		-text [mc "Recursively clone submodules too"] \
+		-variable @recursive \
+		-onvalue true -offvalue false
+	pack $args.type_f.recursive -anchor w
 	grid $args.type_l $args.type_f -sticky new
 
 	grid columnconfigure $args 1 -weight 1
@@ -536,7 +564,7 @@ method _open_origin {} {
 	if {$origin_url ne {} && [file isdirectory $origin_url]} {
 		set p $origin_url
 	} else {
-		set p [_home]
+		set p [pwd]
 	}
 
 	set p [tk_chooseDirectory \
@@ -945,6 +973,30 @@ method _do_clone_checkout {HEAD} {
 	fileevent $fd readable [cb _readtree_wait $fd]
 }
 
+method _do_validate_submodule_cloning {ok} {
+	if {$ok} {
+		$o_cons done $ok
+		set done 1
+	} else {
+		_clone_failed $this [mc "Cannot clone submodules."]
+	}
+}
+
+method _do_clone_submodules {} {
+	if {$recursive eq {true}} {
+		destroy $w_body
+		set o_cons [console::embed \
+			$w_body \
+			[mc "Cloning submodules"]]
+		pack $w_body -fill both -expand 1 -padx 10
+		$o_cons exec \
+			[list git submodule update --init --recursive] \
+			[cb _do_validate_submodule_cloning]
+	} else {
+		set done 1
+	}
+}
+
 method _readtree_wait {fd} {
 	set buf [read $fd]
 	$o_cons update_meter $buf
@@ -975,7 +1027,7 @@ method _readtree_wait {fd} {
 		fconfigure $fd_ph -blocking 0 -translation binary -eofchar {}
 		fileevent $fd_ph readable [cb _postcheckout_wait $fd_ph]
 	} else {
-		set done 1
+		_do_clone_submodules $this
 	}
 }
 
@@ -989,7 +1041,7 @@ method _postcheckout_wait {fd_ph} {
 			hook_failed_popup post-checkout $pch_error 0
 		}
 		unset pch_error
-		set done 1
+		_do_clone_submodules $this
 		return
 	}
 	fconfigure $fd_ph -blocking 0
@@ -1037,7 +1089,7 @@ method _open_local_path {} {
 	if {$local_path ne {}} {
 		set p $local_path
 	} else {
-		set p [_home]
+		set p [pwd]
 	}
 
 	set p [tk_chooseDirectory \
@@ -1056,7 +1108,7 @@ method _open_local_path {} {
 }
 
 method _do_open2 {} {
-	if {![_is_git [file join $local_path .git]]} {
+	if {![_is_git [file join $local_path .git] actualgit]} {
 		error_popup [mc "Not a Git repository: %s" [file tail $local_path]]
 		return
 	}
@@ -1069,7 +1121,7 @@ method _do_open2 {} {
 	}
 
 	_append_recentrepos [pwd]
-	set ::_gitdir .git
+	set ::_gitdir $actualgit
 	set ::_prefix {}
 	set done 1
 }

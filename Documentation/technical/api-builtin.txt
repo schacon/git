@@ -5,7 +5,7 @@ Adding a new built-in
 ---------------------
 
 There are 4 things to do to add a built-in command implementation to
-git:
+Git:
 
 . Define the implementation of the built-in command `foo` with
   signature:
@@ -14,19 +14,22 @@ git:
 
 . Add the external declaration for the function to `builtin.h`.
 
-. Add the command to `commands[]` table in `handle_internal_command()`,
-  defined in `git.c`.  The entry should look like:
+. Add the command to the `commands[]` table defined in `git.c`.
+  The entry should look like:
 
 	{ "foo", cmd_foo, <options> },
 +
 where options is the bitwise-or of:
 
 `RUN_SETUP`::
+	If there is not a Git directory to work on, abort.  If there
+	is a work tree, chdir to the top of it if the command was
+	invoked in a subdirectory.  If there is no work tree, no
+	chdir() is done.
 
-	Make sure there is a git directory to work on, and if there is a
-	work tree, chdir to the top of it if the command was invoked
-	in a subdirectory.  If there is no work tree, no chdir() is
-	done.
+`RUN_SETUP_GENTLY`::
+	If there is a Git directory, chdir as per RUN_SETUP, otherwise,
+	don't chdir anywhere.
 
 `USE_PAGER`::
 
@@ -39,7 +42,7 @@ where options is the bitwise-or of:
 	on bare repositories.
 	This only makes sense when `RUN_SETUP` is also set.
 
-. Add `builtin-foo.o` to `BUILTIN_OBJS` in `Makefile`.
+. Add `builtin/foo.o` to `BUILTIN_OBJS` in `Makefile`.
 
 Additionally, if `foo` is a new command, there are 3 more things to do:
 
@@ -48,6 +51,8 @@ Additionally, if `foo` is a new command, there are 3 more things to do:
 . Write documentation in `Documentation/git-foo.txt`.
 
 . Add an entry for `git-foo` to `command-list.txt`.
+
+. Add an entry for `/git-foo` to `.gitignore`.
 
 
 How a built-in is called

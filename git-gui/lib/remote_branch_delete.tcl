@@ -26,7 +26,7 @@ constructor dialog {} {
 	global all_remotes M1B use_ttk NS
 
 	make_dialog top w
-	wm title $top [append "[appname] ([reponame]): " [mc "Delete Branch Remotely"]]
+	wm title $top [mc "%s (%s): Delete Branch Remotely" [appname] [reponame]]
 	if {$top ne {.}} {
 		wm geometry $top "+[winfo rootx .]+[winfo rooty .]"
 	}
@@ -251,7 +251,7 @@ method _write_url        {args} { set urltype url    }
 method _write_check_head {args} { set checktype head }
 
 method _write_head_list {args} {
-	global current_branch
+	global current_branch _last_merged_branch
 
 	$head_m delete 0 end
 	foreach abr $head_list {
@@ -266,6 +266,13 @@ method _write_head_list {args} {
 		} else {
 			set check_head $current_branch
 		}
+	}
+	set lmb [lsearch -exact -sorted $head_list $_last_merged_branch]
+	if {$lmb >= 0} {
+		$w.heads.l conf -state normal
+		$w.heads.l select set $lmb
+		$w.heads.l yview $lmb
+		$w.heads.l conf -state disabled
 	}
 }
 

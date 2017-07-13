@@ -148,13 +148,20 @@ proc do_options {} {
 		{b gui.trustmtime  {mc "Trust File Modification Timestamps"}}
 		{b gui.pruneduringfetch {mc "Prune Tracking Branches During Fetch"}}
 		{b gui.matchtrackingbranch {mc "Match Tracking Branches"}}
+		{b gui.textconv {mc "Use Textconv For Diffs and Blames"}}
 		{b gui.fastcopyblame {mc "Blame Copy Only On Changed Files"}}
+		{i-0..100 gui.maxrecentrepo {mc "Maximum Length of Recent Repositories List"}}
 		{i-20..200 gui.copyblamethreshold {mc "Minimum Letters To Blame Copy On"}}
 		{i-0..300 gui.blamehistoryctx {mc "Blame History Context Radius (days)"}}
 		{i-1..99 gui.diffcontext {mc "Number of Diff Context Lines"}}
+		{t gui.diffopts {mc "Additional Diff Parameters"}}
 		{i-0..99 gui.commitmsgwidth {mc "Commit Message Text Width"}}
 		{t gui.newbranchtemplate {mc "New Branch Name Template"}}
 		{c gui.encoding {mc "Default File Contents Encoding"}}
+		{b gui.warndetachedcommit {mc "Warn before committing to a detached head"}}
+		{s gui.stageuntracked {mc "Staging of untracked files"} {list "yes" "no" "ask"}}
+		{b gui.displayuntracked {mc "Show untracked files"}}
+		{i-1..99 gui.tabsize {mc "Tab spacing"}}
 		} {
 		set type [lindex $option 0]
 		set name [lindex $option 1]
@@ -172,7 +179,7 @@ proc do_options {} {
 			i-* {
 				regexp -- {-(\d+)\.\.(\d+)$} $type _junk min max
 				${NS}::frame $w.$f.$optid
-				${NS}::label $w.$f.$optid.l -text "$text:"
+				${NS}::label $w.$f.$optid.l -text [mc "%s:" $text]
 				pack $w.$f.$optid.l -side left -anchor w -fill x
 				tspinbox $w.$f.$optid.v \
 					-textvariable ${f}_config_new($name) \
@@ -187,7 +194,7 @@ proc do_options {} {
 			c -
 			t {
 				${NS}::frame $w.$f.$optid
-				${NS}::label $w.$f.$optid.l -text "$text:"
+				${NS}::label $w.$f.$optid.l -text [mc "%s:" $text]
 				${NS}::entry $w.$f.$optid.v \
 					-width 20 \
 					-textvariable ${f}_config_new($name)
@@ -205,6 +212,23 @@ proc do_options {} {
 							$w.$f.$optid.m $w.$f.$optid.b]
 					pack $w.$f.$optid.b -side left -anchor w
 				}
+				pack $w.$f.$optid -side top -anchor w -fill x
+			}
+			s {
+				set opts [eval [lindex $option 3]]
+				${NS}::frame $w.$f.$optid
+				${NS}::label $w.$f.$optid.l -text [mc "%s:" $text]
+				if {$use_ttk} {
+					ttk::combobox $w.$f.$optid.v \
+						-textvariable ${f}_config_new($name) \
+						-values $opts -state readonly
+				} else {
+					eval tk_optionMenu $w.$f.$optid.v \
+						${f}_config_new($name) \
+						$opts
+				}
+				pack $w.$f.$optid.l -side left -anchor w -fill x
+				pack $w.$f.$optid.v -side right -anchor e -padx 5
 				pack $w.$f.$optid -side top -anchor w -fill x
 			}
 			}
@@ -255,7 +279,7 @@ proc do_options {} {
 			[font configure $font -size]
 
 		${NS}::frame $w.global.$name
-		${NS}::label $w.global.$name.l -text "$text:"
+		${NS}::label $w.global.$name.l -text [mc "%s:" $text]
 		${NS}::button $w.global.$name.b \
 			-text [mc "Change Font"] \
 			-command [list \

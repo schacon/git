@@ -3,13 +3,13 @@ git-describe(1)
 
 NAME
 ----
-git-describe - Show the most recent tag that is reachable from a commit
+git-describe - Describe a commit using the most recent tag reachable from it
 
 
 SYNOPSIS
 --------
 [verse]
-'git describe' [--all] [--tags] [--contains] [--abbrev=<n>] <committish>...
+'git describe' [--all] [--tags] [--contains] [--abbrev=<n>] [<commit-ish>...]
 'git describe' [--all] [--tags] [--contains] [--abbrev=<n>] --dirty[=<mark>]
 
 DESCRIPTION
@@ -26,22 +26,27 @@ see the -a and -s options to linkgit:git-tag[1].
 
 OPTIONS
 -------
-<committish>...::
-	Committish object names to describe.
+<commit-ish>...::
+	Commit-ish object names to describe.  Defaults to HEAD if omitted.
 
 --dirty[=<mark>]::
-	Describe the working tree.
-	It means describe HEAD and appends <mark> (`-dirty` by
-	default) if the working tree is dirty.
+--broken[=<mark>]::
+	Describe the state of the working tree.  When the working
+	tree matches HEAD, the output is the same as "git describe
+	HEAD".  If the working tree has local modification "-dirty"
+	is appended to it.  If a repository is corrupt and Git
+	cannot determine if there is local modification, Git will
+	error out, unless `--broken' is given, which appends
+	the suffix "-broken" instead.
 
 --all::
 	Instead of using only the annotated tags, use any ref
-	found in `.git/refs/`.  This option enables matching
-	any known branch, remote branch, or lightweight tag.
+	found in `refs/` namespace.  This option enables matching
+	any known branch, remote-tracking branch, or lightweight tag.
 
 --tags::
 	Instead of using only the annotated tags, use any tag
-	found in `.git/refs/tags`.  This option enables matching
+	found in `refs/tags` namespace.  This option enables matching
 	a lightweight (non-annotated) tag.
 
 --contains::
@@ -57,7 +62,7 @@ OPTIONS
 
 --candidates=<n>::
 	Instead of considering only the 10 most recent tags as
-	candidates to describe the input committish consider
+	candidates to describe the input commit-ish consider
 	up to <n> candidates.  Increasing <n> above 10 will take
 	slightly longer but may produce a more accurate result.
 	An <n> of 0 will cause only exact matches to be output.
@@ -81,11 +86,30 @@ OPTIONS
 	that points at object deadbee....).
 
 --match <pattern>::
-	Only consider tags matching the given pattern (can be used to avoid
-	leaking private tags made from the repository).
+	Only consider tags matching the given `glob(7)` pattern,
+	excluding the "refs/tags/" prefix.  This can be used to avoid
+	leaking private tags from the repository. If given multiple times, a
+	list of patterns will be accumulated, and tags matching any of the
+	patterns will be considered. Use `--no-match` to clear and reset the
+	list of patterns.
+
+--exclude <pattern>::
+	Do not consider tags matching the given `glob(7)` pattern, excluding
+	the "refs/tags/" prefix. This can be used to narrow the tag space and
+	find only tags matching some meaningful criteria. If given multiple
+	times, a list of patterns will be accumulated and tags matching any
+	of the patterns will be excluded. When combined with --match a tag will
+	be considered when it matches at least one --match pattern and does not
+	match any of the --exclude patterns. Use `--no-exclude` to clear and
+	reset the list of patterns.
 
 --always::
 	Show uniquely abbreviated commit object as fallback.
+
+--first-parent::
+	Follow only the first parent commit upon seeing a merge commit.
+	This is useful when you wish to not match tags on branches merged
+	in the history of the target commit.
 
 EXAMPLES
 --------
@@ -131,7 +155,7 @@ closest tagname without any suffix:
 
 Note that the suffix you get if you type these commands today may be
 longer than what Linus saw above when he ran these commands, as your
-git repository may have new commits whose object names begin with
+Git repository may have new commits whose object names begin with
 975b that did not exist back then, and "-g975b" suffix alone may not
 be sufficient to disambiguate these commits.
 
@@ -139,7 +163,7 @@ be sufficient to disambiguate these commits.
 SEARCH STRATEGY
 ---------------
 
-For each committish supplied, 'git describe' will first look for
+For each commit-ish supplied, 'git describe' will first look for
 a tag which tags exactly that commit.  Annotated tags will always
 be preferred over lightweight tags, and tags with newer dates will
 always be preferred over tags with older dates.  If an exact match
@@ -148,24 +172,15 @@ is found, its name will be output and searching will stop.
 If an exact match was not found, 'git describe' will walk back
 through the commit history to locate an ancestor commit which
 has been tagged.  The ancestor's tag will be output along with an
-abbreviation of the input committish's SHA1.
+abbreviation of the input commit-ish's SHA-1. If `--first-parent` was
+specified then the walk will only consider the first parent of each
+commit.
 
 If multiple tags were found during the walk then the tag which
-has the fewest commits different from the input committish will be
+has the fewest commits different from the input commit-ish will be
 selected and output.  Here fewest commits different is defined as
 the number of commits which would be shown by `git log tag..input`
 will be the smallest number of commits possible.
-
-
-Author
-------
-Written by Linus Torvalds <torvalds@osdl.org>, but somewhat
-butchered by Junio C Hamano <gitster@pobox.com>.  Later significantly
-updated by Shawn Pearce <spearce@spearce.org>.
-
-Documentation
---------------
-Documentation by David Greaves, Junio C Hamano and the git-list <git@vger.kernel.org>.
 
 GIT
 ---

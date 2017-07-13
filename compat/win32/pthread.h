@@ -18,7 +18,10 @@
  */
 #define pthread_mutex_t CRITICAL_SECTION
 
-#define pthread_mutex_init(a,b) (InitializeCriticalSection((a)), 0)
+static inline int return_0(int i) {
+	return 0;
+}
+#define pthread_mutex_init(a,b) return_0((InitializeCriticalSection((a)), 0))
 #define pthread_mutex_destroy(a) DeleteCriticalSection((a))
 #define pthread_mutex_lock EnterCriticalSection
 #define pthread_mutex_unlock LeaveCriticalSection
@@ -58,6 +61,7 @@ typedef struct {
 	HANDLE handle;
 	void *(*start_routine)(void*);
 	void *arg;
+	DWORD tid;
 } pthread_t;
 
 extern int pthread_create(pthread_t *thread, const void *unused,
@@ -70,5 +74,41 @@ extern int pthread_create(pthread_t *thread, const void *unused,
 #define pthread_join(a, b) win32_pthread_join(&(a), (b))
 
 extern int win32_pthread_join(pthread_t *thread, void **value_ptr);
+
+#define pthread_equal(t1, t2) ((t1).tid == (t2).tid)
+extern pthread_t pthread_self(void);
+
+static inline void NORETURN pthread_exit(void *ret)
+{
+	ExitThread((DWORD)(intptr_t)ret);
+}
+
+typedef DWORD pthread_key_t;
+static inline int pthread_key_create(pthread_key_t *keyp, void (*destructor)(void *value))
+{
+	return (*keyp = TlsAlloc()) == TLS_OUT_OF_INDEXES ? EAGAIN : 0;
+}
+
+static inline int pthread_key_delete(pthread_key_t key)
+{
+	return TlsFree(key) ? 0 : EINVAL;
+}
+
+static inline int pthread_setspecific(pthread_key_t key, const void *value)
+{
+	return TlsSetValue(key, (void *)value) ? 0 : EINVAL;
+}
+
+static inline void *pthread_getspecific(pthread_key_t key)
+{
+	return TlsGetValue(key);
+}
+
+#ifndef __MINGW64_VERSION_MAJOR
+static inline int pthread_sigmask(int how, const sigset_t *set, sigset_t *oset)
+{
+	return 0;
+}
+#endif
 
 #endif /* PTHREAD_H */

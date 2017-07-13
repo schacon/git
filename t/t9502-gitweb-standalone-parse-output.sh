@@ -40,7 +40,7 @@ check_snapshot () {
 	echo "basename=$basename"
 	grep "filename=.*$basename.tar" gitweb.headers >/dev/null 2>&1 &&
 	"$TAR" tf gitweb.body >file_list &&
-	! grep -v "^$prefix/" file_list
+	! grep -v -e "^$prefix$" -e "^$prefix/" -e "^pax_global_header$" file_list
 }
 
 test_expect_success setup '
@@ -111,5 +111,96 @@ test_expect_success 'snapshot: hierarchical branch name (xx/test)' '
 	! grep "filename=.*/" gitweb.headers
 '
 test_debug 'cat gitweb.headers'
+
+# ----------------------------------------------------------------------
+# forks of projects
+
+test_expect_success 'forks: setup' '
+	git init --bare foo.git &&
+	echo file > file &&
+	git --git-dir=foo.git --work-tree=. add file &&
+	git --git-dir=foo.git --work-tree=. commit -m "Initial commit" &&
+	echo "foo" > foo.git/description &&
+	git clone --bare foo.git foo.bar.git &&
+	echo "foo.bar" > foo.bar.git/description &&
+	git clone --bare foo.git foo_baz.git &&
+	echo "foo_baz" > foo_baz.git/description &&
+	rm -fr   foo &&
+	mkdir -p foo &&
+	(
+		cd foo &&
+		git clone --shared --bare ../foo.git foo-forked.git &&
+		echo "fork of foo" > foo-forked.git/description
+	)
+'
+
+test_expect_success 'forks: not skipped unless "forks" feature enabled' '
+	gitweb_run "a=project_list" &&
+	grep -q ">\\.git<"               gitweb.body &&
+	grep -q ">foo\\.git<"            gitweb.body &&
+	grep -q ">foo_baz\\.git<"        gitweb.body &&
+	grep -q ">foo\\.bar\\.git<"      gitweb.body &&
+	grep -q ">foo_baz\\.git<"        gitweb.body &&
+	grep -q ">foo/foo-forked\\.git<" gitweb.body &&
+	grep -q ">fork of .*<"           gitweb.body
+'
+
+test_expect_success 'enable forks feature' '
+	cat >>gitweb_config.perl <<-\EOF
+	$feature{"forks"}{"default"} = [1];
+	EOF
+'
+
+test_expect_success 'forks: forks skipped if "forks" feature enabled' '
+	gitweb_run "a=project_list" &&
+	grep -q ">\\.git<"               gitweb.body &&
+	grep -q ">foo\\.git<"            gitweb.body &&
+	grep -q ">foo_baz\\.git<"        gitweb.body &&
+	grep -q ">foo\\.bar\\.git<"      gitweb.body &&
+	grep -q ">foo_baz\\.git<"        gitweb.body &&
+	grep -v ">foo/foo-forked\\.git<" gitweb.body &&
+	grep -v ">fork of .*<"           gitweb.body
+'
+
+test_expect_success 'forks: "forks" action for forked repository' '
+	gitweb_run "p=foo.git;a=forks" &&
+	grep -q ">foo/foo-forked\\.git<" gitweb.body &&
+	grep -q ">fork of foo<"          gitweb.body
+'
+
+test_expect_success 'forks: can access forked repository' '
+	gitweb_run "p=foo/foo-forked.git;a=summary" &&
+	grep -q "200 OK"        gitweb.headers &&
+	grep -q ">fork of foo<" gitweb.body
+'
+
+test_expect_success 'forks: project_index lists all projects (incl. forks)' '
+	cat >expected <<-\EOF &&
+	.git
+	foo.bar.git
+	foo.git
+	foo/foo-forked.git
+	foo_baz.git
+	EOF
+	gitweb_run "a=project_index" &&
+	sed -e "s/ .*//" <gitweb.body | sort >actual &&
+	test_cmp expected actual
+'
+
+xss() {
+	echo >&2 "Checking $1..." &&
+	gitweb_run "$1" &&
+	if grep "$TAG" gitweb.body; then
+		echo >&2 "xss: $TAG should have been quoted in output"
+		return 1
+	fi
+	return 0
+}
+
+test_expect_success 'xss checks' '
+	TAG="<magic-xss-tag>" &&
+	xss "a=rss&p=$TAG" &&
+	xss "a=rss&p=foo.git&f=$TAG"
+'
 
 test_done

@@ -2,14 +2,39 @@
 #include "pack.h"
 #include "csum-file.h"
 
-uint32_t pack_idx_default_version = 2;
-uint32_t pack_idx_off32_limit = 0x7fffffff;
+void reset_pack_idx_option(struct pack_idx_option *opts)
+{
+	memset(opts, 0, sizeof(*opts));
+	opts->version = 2;
+	opts->off32_limit = 0x7fffffff;
+}
 
 static int sha1_compare(const void *_a, const void *_b)
 {
 	struct pack_idx_entry *a = *(struct pack_idx_entry **)_a;
 	struct pack_idx_entry *b = *(struct pack_idx_entry **)_b;
-	return hashcmp(a->sha1, b->sha1);
+	return oidcmp(&a->oid, &b->oid);
+}
+
+static int cmp_uint32(const void *a_, const void *b_)
+{
+	uint32_t a = *((uint32_t *)a_);
+	uint32_t b = *((uint32_t *)b_);
+
+	return (a < b) ? -1 : (a != b);
+}
+
+static int need_large_offset(off_t offset, const struct pack_idx_option *opts)
+{
+	uint32_t ofsval;
+
+	if ((offset >> 31) || (opts->off32_limit < offset))
+		return 1;
+	if (!opts->anomaly_nr)
+		return 0;
+	ofsval = offset;
+	return !!bsearch(&ofsval, opts->anomaly, opts->anomaly_nr,
+			 sizeof(ofsval), cmp_uint32);
 }
 
 /*
@@ -18,14 +43,14 @@ static int sha1_compare(const void *_a, const void *_b)
  * will be sorted by SHA1 on exit.
  */
 const char *write_idx_file(const char *index_name, struct pack_idx_entry **objects,
-			   int nr_objects, unsigned char *sha1)
+			   int nr_objects, const struct pack_idx_option *opts,
+			   const unsigned char *sha1)
 {
 	struct sha1file *f;
 	struct pack_idx_entry **sorted_by_sha, **list, **last;
 	off_t last_obj_offset = 0;
 	uint32_t array[256];
 	int i, fd;
-	git_SHA_CTX ctx;
 	uint32_t index_version;
 
 	if (nr_objects) {
@@ -36,26 +61,30 @@ const char *write_idx_file(const char *index_name, struct pack_idx_entry **objec
 			if (objects[i]->offset > last_obj_offset)
 				last_obj_offset = objects[i]->offset;
 		}
-		qsort(sorted_by_sha, nr_objects, sizeof(sorted_by_sha[0]),
-		      sha1_compare);
+		QSORT(sorted_by_sha, nr_objects, sha1_compare);
 	}
 	else
 		sorted_by_sha = list = last = NULL;
 
-	if (!index_name) {
-		static char tmpfile[PATH_MAX];
-		fd = odb_mkstemp(tmpfile, sizeof(tmpfile), "pack/tmp_idx_XXXXXX");
-		index_name = xstrdup(tmpfile);
+	if (opts->flags & WRITE_IDX_VERIFY) {
+		assert(index_name);
+		f = sha1fd_check(index_name);
 	} else {
-		unlink(index_name);
-		fd = open(index_name, O_CREAT|O_EXCL|O_WRONLY, 0600);
+		if (!index_name) {
+			struct strbuf tmp_file = STRBUF_INIT;
+			fd = odb_mkstemp(&tmp_file, "pack/tmp_idx_XXXXXX");
+			index_name = strbuf_detach(&tmp_file, NULL);
+		} else {
+			unlink(index_name);
+			fd = open(index_name, O_CREAT|O_EXCL|O_WRONLY, 0600);
+			if (fd < 0)
+				die_errno("unable to create '%s'", index_name);
+		}
+		f = sha1fd(fd, index_name);
 	}
-	if (fd < 0)
-		die_errno("unable to create '%s'", index_name);
-	f = sha1fd(fd, index_name);
 
 	/* if last object's offset is >= 2^31 we should use index V2 */
-	index_version = (last_obj_offset >> 31) ? 2 : pack_idx_default_version;
+	index_version = need_large_offset(last_obj_offset, opts) ? 2 : opts->version;
 
 	/* index versions 2 and above need a header */
 	if (index_version >= 2) {
@@ -74,7 +103,7 @@ const char *write_idx_file(const char *index_name, struct pack_idx_entry **objec
 		struct pack_idx_entry **next = list;
 		while (next < last) {
 			struct pack_idx_entry *obj = *next;
-			if (obj->sha1[0] != i)
+			if (obj->oid.hash[0] != i)
 				break;
 			next++;
 		}
@@ -82,9 +111,6 @@ const char *write_idx_file(const char *index_name, struct pack_idx_entry **objec
 		list = next;
 	}
 	sha1write(f, array, 256 * 4);
-
-	/* compute the SHA1 hash of sorted object names. */
-	git_SHA1_Init(&ctx);
 
 	/*
 	 * Write the actual SHA1 entries..
@@ -96,8 +122,11 @@ const char *write_idx_file(const char *index_name, struct pack_idx_entry **objec
 			uint32_t offset = htonl(obj->offset);
 			sha1write(f, &offset, 4);
 		}
-		sha1write(f, obj->sha1, 20);
-		git_SHA1_Update(&ctx, obj->sha1, 20);
+		sha1write(f, obj->oid.hash, 20);
+		if ((opts->flags & WRITE_IDX_STRICT) &&
+		    (i && !oidcmp(&list[-2]->oid, &obj->oid)))
+			die("The same object %s appears twice in the pack",
+			    oid_to_hex(&obj->oid));
 	}
 
 	if (index_version >= 2) {
@@ -115,8 +144,11 @@ const char *write_idx_file(const char *index_name, struct pack_idx_entry **objec
 		list = sorted_by_sha;
 		for (i = 0; i < nr_objects; i++) {
 			struct pack_idx_entry *obj = *list++;
-			uint32_t offset = (obj->offset <= pack_idx_off32_limit) ?
-				obj->offset : (0x80000000 | nr_large_offset++);
+			uint32_t offset;
+
+			offset = (need_large_offset(obj->offset, opts)
+				  ? (0x80000000 | nr_large_offset++)
+				  : obj->offset);
 			offset = htonl(offset);
 			sha1write(f, &offset, 4);
 		}
@@ -126,20 +158,32 @@ const char *write_idx_file(const char *index_name, struct pack_idx_entry **objec
 		while (nr_large_offset) {
 			struct pack_idx_entry *obj = *list++;
 			uint64_t offset = obj->offset;
-			if (offset > pack_idx_off32_limit) {
-				uint32_t split[2];
-				split[0] = htonl(offset >> 32);
-				split[1] = htonl(offset & 0xffffffff);
-				sha1write(f, split, 8);
-				nr_large_offset--;
-			}
+			uint32_t split[2];
+
+			if (!need_large_offset(offset, opts))
+				continue;
+			split[0] = htonl(offset >> 32);
+			split[1] = htonl(offset & 0xffffffff);
+			sha1write(f, split, 8);
+			nr_large_offset--;
 		}
 	}
 
 	sha1write(f, sha1, 20);
-	sha1close(f, NULL, CSUM_FSYNC);
-	git_SHA1_Final(sha1, &ctx);
+	sha1close(f, NULL, ((opts->flags & WRITE_IDX_VERIFY)
+			    ? CSUM_CLOSE : CSUM_FSYNC));
 	return index_name;
+}
+
+off_t write_pack_header(struct sha1file *f, uint32_t nr_entries)
+{
+	struct pack_header hdr;
+
+	hdr.hdr_signature = htonl(PACK_SIGNATURE);
+	hdr.hdr_version = htonl(PACK_VERSION);
+	hdr.hdr_entries = htonl(nr_entries);
+	sha1write(f, &hdr, sizeof(hdr));
+	return sizeof(hdr);
 }
 
 /*
@@ -243,13 +287,12 @@ char *index_pack_lockfile(int ip_out)
 	 * case, we need it to remove the corresponding .keep file
 	 * later on.  If we don't get that then tough luck with it.
 	 */
-	if (read_in_full(ip_out, packname, 46) == 46 && packname[45] == '\n' &&
-	    memcmp(packname, "keep\t", 5) == 0) {
-		char path[PATH_MAX];
+	if (read_in_full(ip_out, packname, 46) == 46 && packname[45] == '\n') {
+		const char *name;
 		packname[45] = 0;
-		snprintf(path, sizeof(path), "%s/pack/pack-%s.keep",
-			 get_object_directory(), packname + 5);
-		return xstrdup(path);
+		if (skip_prefix(packname, "keep\t", &name))
+			return xstrfmt("%s/pack/pack-%s.keep",
+				       get_object_directory(), name);
 	}
 	return NULL;
 }
@@ -261,7 +304,8 @@ char *index_pack_lockfile(int ip_out)
  *  - each byte afterwards: low seven bits are size continuation,
  *    with the high bit being "size continues"
  */
-int encode_in_pack_object_header(enum object_type type, uintmax_t size, unsigned char *hdr)
+int encode_in_pack_object_header(unsigned char *hdr, int hdr_len,
+				 enum object_type type, uintmax_t size)
 {
 	int n = 1;
 	unsigned char c;
@@ -272,6 +316,8 @@ int encode_in_pack_object_header(enum object_type type, uintmax_t size, unsigned
 	c = (type << 4) | (size & 15);
 	size >>= 4;
 	while (size) {
+		if (n == hdr_len)
+			die("object size is too enormous to format");
 		*hdr++ = c | 0x80;
 		c = size & 0x7f;
 		size >>= 7;
@@ -279,4 +325,48 @@ int encode_in_pack_object_header(enum object_type type, uintmax_t size, unsigned
 	}
 	*hdr = c;
 	return n;
+}
+
+struct sha1file *create_tmp_packfile(char **pack_tmp_name)
+{
+	struct strbuf tmpname = STRBUF_INIT;
+	int fd;
+
+	fd = odb_mkstemp(&tmpname, "pack/tmp_pack_XXXXXX");
+	*pack_tmp_name = strbuf_detach(&tmpname, NULL);
+	return sha1fd(fd, *pack_tmp_name);
+}
+
+void finish_tmp_packfile(struct strbuf *name_buffer,
+			 const char *pack_tmp_name,
+			 struct pack_idx_entry **written_list,
+			 uint32_t nr_written,
+			 struct pack_idx_option *pack_idx_opts,
+			 unsigned char sha1[])
+{
+	const char *idx_tmp_name;
+	int basename_len = name_buffer->len;
+
+	if (adjust_shared_perm(pack_tmp_name))
+		die_errno("unable to make temporary pack file readable");
+
+	idx_tmp_name = write_idx_file(NULL, written_list, nr_written,
+				      pack_idx_opts, sha1);
+	if (adjust_shared_perm(idx_tmp_name))
+		die_errno("unable to make temporary index file readable");
+
+	strbuf_addf(name_buffer, "%s.pack", sha1_to_hex(sha1));
+
+	if (rename(pack_tmp_name, name_buffer->buf))
+		die_errno("unable to rename temporary pack file");
+
+	strbuf_setlen(name_buffer, basename_len);
+
+	strbuf_addf(name_buffer, "%s.idx", sha1_to_hex(sha1));
+	if (rename(idx_tmp_name, name_buffer->buf))
+		die_errno("unable to rename temporary index file");
+
+	strbuf_setlen(name_buffer, basename_len);
+
+	free((void *)idx_tmp_name);
 }

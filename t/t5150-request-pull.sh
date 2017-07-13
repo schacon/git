@@ -67,9 +67,11 @@ test_expect_success 'setup: two scripts for reading pull requests' '
 
 	cat <<-\EOT >read-request.sed &&
 	#!/bin/sed -nf
-	/ in the git repository at:$/! d
+	# Note that a request could ask for "tag $tagname"
+	/ in the git repository at:$/!d
 	n
 	/^$/ n
+	s/ tag \([^ ]*\)$/ tag--\1/
 	s/^[ 	]*\(.*\) \([^ ]*\)/please pull\
 	\1\
 	\2/p
@@ -78,21 +80,22 @@ test_expect_success 'setup: two scripts for reading pull requests' '
 
 	cat <<-EOT >fuzz.sed
 	#!/bin/sed -nf
+	s/$downstream_url_for_sed/URL/g
 	s/$_x40/OBJECT_NAME/g
 	s/A U Thor/AUTHOR/g
 	s/[-0-9]\{10\} [:0-9]\{8\} [-+][0-9]\{4\}/DATE/g
 	s/        [^ ].*/        SUBJECT/g
 	s/  [^ ].* (DATE)/  SUBJECT (DATE)/g
-	s/$downstream_url_for_sed/URL/g
-	s/for-upstream/BRANCH/g
+	s|tags/full|BRANCH|g
 	s/mnemonic.txt/FILENAME/g
+	s/^version [0-9]/VERSION/
 	/^ FILENAME | *[0-9]* [-+]*\$/ b diffstat
 	/^AUTHOR ([0-9]*):\$/ b shortlog
 	p
 	b
 	: diffstat
 	n
-	/ [0-9]* files changed/ {
+	/ [0-9]* files* changed/ {
 		a\\
 	DIFFSTAT
 		b
@@ -102,7 +105,7 @@ test_expect_success 'setup: two scripts for reading pull requests' '
 	/^        [a-zA-Z]/ n
 	/^[a-zA-Z]* ([0-9]*):\$/ n
 	/^\$/ N
-	/^\n[a-zA-Z]* ([0-9]*):\$/! {
+	/^\n[a-zA-Z]* ([0-9]*):\$/!{
 		a\\
 	SHORTLOG
 		D
@@ -124,7 +127,7 @@ test_expect_success 'pull request when forgot to push' '
 		test_must_fail git request-pull initial "$downstream_url" \
 			2>../err
 	) &&
-	grep "No branch of.*is at:\$" err &&
+	grep "No match for commit .*" err &&
 	grep "Are you sure you pushed" err
 
 '
@@ -138,7 +141,7 @@ test_expect_success 'pull request after push' '
 		git checkout initial &&
 		git merge --ff-only master &&
 		git push origin master:for-upstream &&
-		git request-pull initial origin >../request
+		git request-pull initial origin master:for-upstream >../request
 	) &&
 	sed -nf read-request.sed <request >digest &&
 	cat digest &&
@@ -157,7 +160,7 @@ test_expect_success 'pull request after push' '
 
 '
 
-test_expect_success 'request names an appropriate branch' '
+test_expect_success 'request asks HEAD to be pulled' '
 
 	rm -fr downstream.git &&
 	git init --bare downstream.git &&
@@ -176,10 +179,7 @@ test_expect_success 'request names an appropriate branch' '
 		read repository &&
 		read branch
 	} <digest &&
-	{
-		test "$branch" = master ||
-		test "$branch" = for-upstream
-	}
+	test -z "$branch"
 
 '
 
@@ -193,8 +193,17 @@ test_expect_success 'pull request format' '
 	  SUBJECT (DATE)
 
 	are available in the git repository at:
+
 	  URL BRANCH
 
+	for you to fetch changes up to OBJECT_NAME:
+
+	  SUBJECT (DATE)
+
+	----------------------------------------------------------------
+	VERSION
+
+	----------------------------------------------------------------
 	SHORTLOG
 
 	DIFFSTAT
@@ -203,12 +212,24 @@ test_expect_success 'pull request format' '
 		cd local &&
 		git checkout initial &&
 		git merge --ff-only master &&
-		git push origin master:for-upstream &&
-		git request-pull initial "$downstream_url" >../request
+		git push origin tags/full &&
+		git request-pull initial "$downstream_url" tags/full >../request
 	) &&
 	<request sed -nf fuzz.sed >request.fuzzy &&
-	test_cmp expect request.fuzzy
+	test_i18ncmp expect request.fuzzy &&
 
+	(
+		cd local &&
+		git request-pull initial "$downstream_url" tags/full:refs/tags/full
+	) >request &&
+	sed -nf fuzz.sed <request >request.fuzzy &&
+	test_i18ncmp expect request.fuzzy &&
+
+	(
+		cd local &&
+		git request-pull initial "$downstream_url" full
+	) >request &&
+	grep " tags/full\$" request
 '
 
 test_expect_success 'request-pull ignores OPTIONS_KEEPDASHDASH poison' '
@@ -220,7 +241,7 @@ test_expect_success 'request-pull ignores OPTIONS_KEEPDASHDASH poison' '
 		git checkout initial &&
 		git merge --ff-only master &&
 		git push origin master:for-upstream &&
-		git request-pull -- initial "$downstream_url" >../request
+		git request-pull -- initial "$downstream_url" master:for-upstream >../request
 	)
 
 '

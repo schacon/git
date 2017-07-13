@@ -11,9 +11,9 @@ SYNOPSIS
 [verse]
 'git pack-objects' [-q | --progress | --all-progress] [--all-progress-implied]
 	[--no-reuse-delta] [--delta-base-offset] [--non-empty]
-	[--local] [--incremental] [--window=N] [--depth=N]
-	[--revs [--unpacked | --all]*] [--stdout | base-name]
-	[--keep-true-parents] < object-list
+	[--local] [--incremental] [--window=<n>] [--depth=<n>]
+	[--revs [--unpacked | --all]] [--stdout | base-name]
+	[--shallow] [--keep-true-parents] < object-list
 
 
 DESCRIPTION
@@ -35,7 +35,7 @@ A pack index file (.idx) is generated for fast, random access to the
 objects in the pack. Placing both the index file (.idx) and the packed
 archive (.pack) in the pack/ subdirectory of $GIT_OBJECT_DIRECTORY (or
 any of the directories on $GIT_ALTERNATE_OBJECT_DIRECTORIES)
-enables git to read from the pack archive.
+enables Git to read from the pack archive.
 
 The 'git unpack-objects' command can read the packed archive and
 expand the objects contained in the pack into "one-file
@@ -50,9 +50,8 @@ base-name::
 	Write into a pair of files (.pack and .idx), using
 	<base-name> to determine the name of the created file.
 	When this option is used, the two files are written in
-	<base-name>-<SHA1>.{pack,idx} files.  <SHA1> is a hash
-	of the sorted object names to make the resulting filename
-	based on the pack content, and written to the standard
+	<base-name>-<SHA-1>.{pack,idx} files.  <SHA-1> is a hash
+	based on the pack content and is written to the standard
 	output of the command.
 
 --stdout::
@@ -65,6 +64,8 @@ base-name::
 	the same way as 'git rev-list' with the `--objects` flag
 	uses its `commit` arguments to build the list of objects it
 	outputs.  The objects on the resulting list are packed.
+	Besides revisions, `--not` or `--shallow <SHA-1>` lines are
+	also accepted.
 
 --unpacked::
 	This implies `--revs`.  When processing the list of
@@ -80,10 +81,10 @@ base-name::
 --include-tag::
 	Include unasked-for annotated tags if the object they
 	reference was included in the resulting packfile.  This
-	can be useful to send new tags to native git clients.
+	can be useful to send new tags to native Git clients.
 
---window=[N]::
---depth=[N]::
+--window=<n>::
+--depth=<n>::
 	These two options affect how the objects contained in
 	the pack are stored using delta compression.  The
 	objects are first internally sorted by type, size and
@@ -95,27 +96,28 @@ base-name::
 	times to get to the necessary object.
 	The default value for --window is 10 and --depth is 50.
 
---window-memory=[N]::
+--window-memory=<n>::
 	This option provides an additional limit on top of `--window`;
 	the window size will dynamically scale down so as to not take
-	up more than N bytes in memory.  This is useful in
+	up more than '<n>' bytes in memory.  This is useful in
 	repositories with a mix of large and small objects to not run
 	out of memory with a large window, but still be able to take
 	advantage of the large window for the smaller objects.  The
 	size can be suffixed with "k", "m", or "g".
-	`--window-memory=0` makes memory usage unlimited, which is the
-	default.
+	`--window-memory=0` makes memory usage unlimited.  The default
+	is taken from the `pack.windowMemory` configuration variable.
 
---max-pack-size=[N]::
+--max-pack-size=<n>::
 	Maximum size of each output pack file. The size can be suffixed with
 	"k", "m", or "g". The minimum size allowed is limited to 1 MiB.
-	If specified,  multiple packfiles may be created.
+	If specified, multiple packfiles may be created, which also
+	prevents the creation of a bitmap index.
 	The default is unlimited, unless the config variable
 	`pack.packSizeLimit` is set.
 
 --honor-pack-keep::
 	This flag causes an object already in a local pack that
-	has a .keep file to be ignored, even if it it would have
+	has a .keep file to be ignored, even if it would have
 	otherwise been packed.
 
 --incremental::
@@ -171,7 +173,7 @@ base-name::
 	wholesale enforcement of a different compression level on the
 	packed data is desired.
 
---compression=[N]::
+--compression=<n>::
 	Specifies compression level for newly-compressed data in the
 	generated pack.  If not specified,  pack compression level is
 	determined first by pack.compression,  then by core.compression,
@@ -185,20 +187,30 @@ base-name::
 	option only makes sense in conjunction with --stdout.
 +
 Note: A thin pack violates the packed archive format by omitting
-required objects and is thus unusable by git without making it
+required objects and is thus unusable by Git without making it
 self-contained. Use `git index-pack --fix-thin`
 (see linkgit:git-index-pack[1]) to restore the self-contained property.
 
+--shallow::
+	Optimize a pack that will be provided to a client with a shallow
+	repository.  This option, combined with --thin, can result in a
+	smaller pack at the cost of speed.
+
 --delta-base-offset::
-	A packed archive can express base object of a delta as
-	either 20-byte object name or as an offset in the
-	stream, but older version of git does not understand the
+	A packed archive can express the base object of a delta as
+	either a 20-byte object name or as an offset in the
+	stream, but ancient versions of Git don't understand the
 	latter.  By default, 'git pack-objects' only uses the
 	former format for better compatibility.  This option
 	allows the command to use the latter format for
 	compactness.  Depending on the average delta chain
 	length, this option typically shrinks the resulting
 	packfile by 3-5 per-cent.
++
+Note: Porcelain commands such as `git gc` (see linkgit:git-gc[1]),
+`git repack` (see linkgit:git-repack[1]) pass this option by default
+in modern Git when they put objects in your repository into pack files.
+So does `git bundle` (see linkgit:git-bundle[1]) when it creates a bundle.
 
 --threads=<n>::
 	Specifies the number of threads to spawn when searching for best
@@ -207,7 +219,7 @@ self-contained. Use `git index-pack --fix-thin`
 	This is meant to reduce packing time on multiprocessor machines.
 	The required amount of memory for the delta search window is
 	however multiplied by the number of threads.
-	Specifying 0 will cause git to auto-detect the number of CPU's
+	Specifying 0 will cause Git to auto-detect the number of CPU's
 	and set the number of threads accordingly.
 
 --index-version=<version>[,<offset>]::
@@ -218,15 +230,6 @@ self-contained. Use `git index-pack --fix-thin`
 --keep-true-parents::
 	With this option, parents that are hidden by grafts are packed
 	nevertheless.
-
-
-Author
-------
-Written by Linus Torvalds <torvalds@osdl.org>
-
-Documentation
--------------
-Documentation by Junio C Hamano
 
 SEE ALSO
 --------

@@ -38,7 +38,7 @@ testrebase() {
 		# Clean up the state from the previous one
 		git reset --hard pre-rebase &&
 		test_must_fail git rebase$type master &&
-		test -d "$dotest" &&
+		test_path_is_dir "$dotest" &&
 		git rebase --abort &&
 		test $(git rev-parse to-rebase) = $(git rev-parse pre-rebase) &&
 		test ! -d "$dotest"
@@ -49,7 +49,7 @@ testrebase() {
 		# Clean up the state from the previous one
 		git reset --hard pre-rebase &&
 		test_must_fail git rebase$type master &&
-		test -d "$dotest" &&
+		test_path_is_dir "$dotest" &&
 		test_must_fail git rebase --skip &&
 		test $(git rev-parse HEAD) = $(git rev-parse master) &&
 		git rebase --abort &&
@@ -62,7 +62,7 @@ testrebase() {
 		# Clean up the state from the previous one
 		git reset --hard pre-rebase &&
 		test_must_fail git rebase$type master &&
-		test -d "$dotest" &&
+		test_path_is_dir "$dotest" &&
 		echo c > a &&
 		echo d >> a &&
 		git add a &&
@@ -72,9 +72,55 @@ testrebase() {
 		test $(git rev-parse to-rebase) = $(git rev-parse pre-rebase) &&
 		test ! -d "$dotest"
 	'
+
+	test_expect_success "rebase$type --abort does not update reflog" '
+		cd "$work_dir" &&
+		# Clean up the state from the previous one
+		git reset --hard pre-rebase &&
+		git reflog show to-rebase > reflog_before &&
+		test_must_fail git rebase$type master &&
+		git rebase --abort &&
+		git reflog show to-rebase > reflog_after &&
+		test_cmp reflog_before reflog_after &&
+		rm reflog_before reflog_after
+	'
+
+	test_expect_success 'rebase --abort can not be used with other options' '
+		cd "$work_dir" &&
+		# Clean up the state from the previous one
+		git reset --hard pre-rebase &&
+		test_must_fail git rebase$type master &&
+		test_must_fail git rebase -v --abort &&
+		test_must_fail git rebase --abort -v &&
+		git rebase --abort
+	'
 }
 
 testrebase "" .git/rebase-apply
 testrebase " --merge" .git/rebase-merge
+
+test_expect_success 'rebase --quit' '
+	cd "$work_dir" &&
+	# Clean up the state from the previous one
+	git reset --hard pre-rebase &&
+	test_must_fail git rebase master &&
+	test_path_is_dir .git/rebase-apply &&
+	head_before=$(git rev-parse HEAD) &&
+	git rebase --quit &&
+	test $(git rev-parse HEAD) = $head_before &&
+	test ! -d .git/rebase-apply
+'
+
+test_expect_success 'rebase --merge --quit' '
+	cd "$work_dir" &&
+	# Clean up the state from the previous one
+	git reset --hard pre-rebase &&
+	test_must_fail git rebase --merge master &&
+	test_path_is_dir .git/rebase-merge &&
+	head_before=$(git rev-parse HEAD) &&
+	git rebase --quit &&
+	test $(git rev-parse HEAD) = $head_before &&
+	test ! -d .git/rebase-merge
+'
 
 test_done

@@ -4,6 +4,8 @@
  * Copyright (c) 2006 Junio C Hamano
  */
 #include "cache.h"
+#include "config.h"
+#include "lockfile.h"
 #include "color.h"
 #include "commit.h"
 #include "blob.h"
@@ -13,76 +15,84 @@
 #include "revision.h"
 #include "log-tree.h"
 #include "builtin.h"
+#include "submodule.h"
+#include "sha1-array.h"
 
-struct blobinfo {
-	unsigned char sha1[20];
-	const char *name;
-	unsigned mode;
-};
+#define DIFF_NO_INDEX_EXPLICIT 1
+#define DIFF_NO_INDEX_IMPLICIT 2
 
 static const char builtin_diff_usage[] =
-"git diff <options> <rev>{0,2} -- <path>*";
+"git diff [<options>] [<commit> [<commit>]] [--] [<path>...]";
+
+static const char *blob_path(struct object_array_entry *entry)
+{
+	return entry->path ? entry->path : entry->name;
+}
 
 static void stuff_change(struct diff_options *opt,
 			 unsigned old_mode, unsigned new_mode,
-			 const unsigned char *old_sha1,
-			 const unsigned char *new_sha1,
-			 const char *old_name,
-			 const char *new_name)
+			 const struct object_id *old_oid,
+			 const struct object_id *new_oid,
+			 int old_oid_valid,
+			 int new_oid_valid,
+			 const char *old_path,
+			 const char *new_path)
 {
 	struct diff_filespec *one, *two;
 
-	if (!is_null_sha1(old_sha1) && !is_null_sha1(new_sha1) &&
-	    !hashcmp(old_sha1, new_sha1) && (old_mode == new_mode))
+	if (!is_null_oid(old_oid) && !is_null_oid(new_oid) &&
+	    !oidcmp(old_oid, new_oid) && (old_mode == new_mode))
 		return;
 
 	if (DIFF_OPT_TST(opt, REVERSE_DIFF)) {
-		unsigned tmp;
-		const unsigned char *tmp_u;
-		const char *tmp_c;
-		tmp = old_mode; old_mode = new_mode; new_mode = tmp;
-		tmp_u = old_sha1; old_sha1 = new_sha1; new_sha1 = tmp_u;
-		tmp_c = old_name; old_name = new_name; new_name = tmp_c;
+		SWAP(old_mode, new_mode);
+		SWAP(old_oid, new_oid);
+		SWAP(old_path, new_path);
 	}
 
 	if (opt->prefix &&
-	    (strncmp(old_name, opt->prefix, opt->prefix_length) ||
-	     strncmp(new_name, opt->prefix, opt->prefix_length)))
+	    (strncmp(old_path, opt->prefix, opt->prefix_length) ||
+	     strncmp(new_path, opt->prefix, opt->prefix_length)))
 		return;
 
-	one = alloc_filespec(old_name);
-	two = alloc_filespec(new_name);
-	fill_filespec(one, old_sha1, old_mode);
-	fill_filespec(two, new_sha1, new_mode);
+	one = alloc_filespec(old_path);
+	two = alloc_filespec(new_path);
+	fill_filespec(one, old_oid, old_oid_valid, old_mode);
+	fill_filespec(two, new_oid, new_oid_valid, new_mode);
 
 	diff_queue(&diff_queued_diff, one, two);
 }
 
 static int builtin_diff_b_f(struct rev_info *revs,
 			    int argc, const char **argv,
-			    struct blobinfo *blob,
-			    const char *path)
+			    struct object_array_entry **blob)
 {
 	/* Blob vs file in the working tree*/
 	struct stat st;
+	const char *path;
 
 	if (argc > 1)
 		usage(builtin_diff_usage);
 
+	GUARD_PATHSPEC(&revs->prune_data, PATHSPEC_FROMTOP | PATHSPEC_LITERAL);
+	path = revs->prune_data.items[0].match;
+
 	if (lstat(path, &st))
-		die_errno("failed to stat '%s'", path);
+		die_errno(_("failed to stat '%s'"), path);
 	if (!(S_ISREG(st.st_mode) || S_ISLNK(st.st_mode)))
-		die("'%s': not a regular file or symlink", path);
+		die(_("'%s': not a regular file or symlink"), path);
 
 	diff_set_mnemonic_prefix(&revs->diffopt, "o/", "w/");
 
-	if (blob[0].mode == S_IFINVALID)
-		blob[0].mode = canon_mode(st.st_mode);
+	if (blob[0]->mode == S_IFINVALID)
+		blob[0]->mode = canon_mode(st.st_mode);
 
 	stuff_change(&revs->diffopt,
-		     blob[0].mode, canon_mode(st.st_mode),
-		     blob[0].sha1, null_sha1,
-		     path, path);
+		     blob[0]->mode, canon_mode(st.st_mode),
+		     &blob[0]->item->oid, &null_oid,
+		     1, 0,
+		     blob[0]->path ? blob[0]->path : path,
+		     path);
 	diffcore_std(&revs->diffopt);
 	diff_flush(&revs->diffopt);
 	return 0;
@@ -90,23 +100,24 @@ static int builtin_diff_b_f(struct rev_info *revs,
 
 static int builtin_diff_blobs(struct rev_info *revs,
 			      int argc, const char **argv,
-			      struct blobinfo *blob)
+			      struct object_array_entry **blob)
 {
 	unsigned mode = canon_mode(S_IFREG | 0644);
 
 	if (argc > 1)
 		usage(builtin_diff_usage);
 
-	if (blob[0].mode == S_IFINVALID)
-		blob[0].mode = mode;
+	if (blob[0]->mode == S_IFINVALID)
+		blob[0]->mode = mode;
 
-	if (blob[1].mode == S_IFINVALID)
-		blob[1].mode = mode;
+	if (blob[1]->mode == S_IFINVALID)
+		blob[1]->mode = mode;
 
 	stuff_change(&revs->diffopt,
-		     blob[0].mode, blob[1].mode,
-		     blob[0].sha1, blob[1].sha1,
-		     blob[0].name, blob[1].name);
+		     blob[0]->mode, blob[1]->mode,
+		     &blob[0]->item->oid, &blob[1]->item->oid,
+		     1, 1,
+		     blob_path(blob[0]), blob_path(blob[1]));
 	diffcore_std(&revs->diffopt);
 	diff_flush(&revs->diffopt);
 	return 0;
@@ -124,8 +135,6 @@ static int builtin_diff_index(struct rev_info *revs,
 			usage(builtin_diff_usage);
 		argv++; argc--;
 	}
-	if (!cached)
-		setup_work_tree();
 	/*
 	 * Make sure there is one revision (i.e. pending object),
 	 * and there is no revision filtering parameters.
@@ -134,8 +143,14 @@ static int builtin_diff_index(struct rev_info *revs,
 	    revs->max_count != -1 || revs->min_age != -1 ||
 	    revs->max_age != -1)
 		usage(builtin_diff_usage);
-	if (read_cache_preload(revs->diffopt.paths) < 0) {
-		perror("read_cache_preload");
+	if (!cached) {
+		setup_work_tree();
+		if (read_cache_preload(&revs->diffopt.pathspec) < 0) {
+			perror("read_cache_preload");
+			return -1;
+		}
+	} else if (read_cache() < 0) {
+		perror("read_cache");
 		return -1;
 	}
 	return run_diff_index(revs, cached);
@@ -143,22 +158,24 @@ static int builtin_diff_index(struct rev_info *revs,
 
 static int builtin_diff_tree(struct rev_info *revs,
 			     int argc, const char **argv,
-			     struct object_array_entry *ent)
+			     struct object_array_entry *ent0,
+			     struct object_array_entry *ent1)
 {
-	const unsigned char *(sha1[2]);
+	const struct object_id *(oid[2]);
 	int swap = 0;
 
 	if (argc > 1)
 		usage(builtin_diff_usage);
 
-	/* We saw two trees, ent[0] and ent[1].
-	 * if ent[1] is uninteresting, they are swapped
+	/*
+	 * We saw two trees, ent0 and ent1.  If ent1 is uninteresting,
+	 * swap them.
 	 */
-	if (ent[1].item->flags & UNINTERESTING)
+	if (ent1->item->flags & UNINTERESTING)
 		swap = 1;
-	sha1[swap] = ent[0].item->sha1;
-	sha1[1-swap] = ent[1].item->sha1;
-	diff_tree_sha1(sha1[0], sha1[1], "", &revs->diffopt);
+	oid[swap] = &ent0->item->oid;
+	oid[1 - swap] = &ent1->item->oid;
+	diff_tree_oid(oid[0], oid[1], "", &revs->diffopt);
 	log_tree_diff_flush(revs);
 	return 0;
 }
@@ -168,7 +185,7 @@ static int builtin_diff_combined(struct rev_info *revs,
 				 struct object_array_entry *ent,
 				 int ents)
 {
-	const unsigned char (*parent)[20];
+	struct oid_array parents = OID_ARRAY_INIT;
 	int i;
 
 	if (argc > 1)
@@ -176,11 +193,11 @@ static int builtin_diff_combined(struct rev_info *revs,
 
 	if (!revs->dense_combined_merges && !revs->combine_merges)
 		revs->dense_combined_merges = revs->combine_merges = 1;
-	parent = xmalloc(ents * sizeof(*parent));
-	for (i = 0; i < ents; i++)
-		hashcpy((unsigned char *)(parent + i), ent[i].item->sha1);
-	diff_tree_combined(parent[0], parent + 1, ents - 1,
+	for (i = 1; i < ents; i++)
+		oid_array_append(&parents, &ent[i].item->oid);
+	diff_tree_combined(&ent[0].item->oid, &parents,
 			   revs->dense_combined_merges, revs);
+	oid_array_clear(&parents);
 	return 0;
 }
 
@@ -196,17 +213,11 @@ static void refresh_index_quietly(void)
 	discard_cache();
 	read_cache();
 	refresh_cache(REFRESH_QUIET|REFRESH_UNMERGED);
-
-	if (active_cache_changed &&
-	    !write_cache(fd, active_cache, active_nr))
-		commit_locked_index(lock_file);
-
-	rollback_lock_file(lock_file);
+	update_index_if_able(&the_index, lock_file);
 }
 
 static int builtin_diff_files(struct rev_info *revs, int argc, const char **argv)
 {
-	int result;
 	unsigned int options = 0;
 
 	while (1 < argc && argv[1][0] == '-') {
@@ -221,7 +232,7 @@ static int builtin_diff_files(struct rev_info *revs, int argc, const char **argv
 		else if (!strcmp(argv[1], "-h"))
 			usage(builtin_diff_usage);
 		else
-			return error("invalid option: %s", argv[1]);
+			return error(_("invalid option: %s"), argv[1]);
 		argv++; argc--;
 	}
 
@@ -236,23 +247,21 @@ static int builtin_diff_files(struct rev_info *revs, int argc, const char **argv
 		revs->combine_merges = revs->dense_combined_merges = 1;
 
 	setup_work_tree();
-	if (read_cache_preload(revs->diffopt.paths) < 0) {
+	if (read_cache_preload(&revs->diffopt.pathspec) < 0) {
 		perror("read_cache_preload");
 		return -1;
 	}
-	result = run_diff_files(revs, options);
-	return diff_result_code(&revs->diffopt, result);
+	return run_diff_files(revs, options);
 }
 
 int cmd_diff(int argc, const char **argv, const char *prefix)
 {
 	int i;
 	struct rev_info rev;
-	struct object_array_entry ent[100];
-	int ents = 0, blobs = 0, paths = 0;
-	const char *path = NULL;
-	struct blobinfo blob[2];
-	int nongit;
+	struct object_array ent = OBJECT_ARRAY_INIT;
+	int blobs = 0, paths = 0;
+	struct object_array_entry *blob[2];
+	int nongit = 0, no_index = 0;
 	int result = 0;
 
 	/*
@@ -278,42 +287,85 @@ int cmd_diff(int argc, const char **argv, const char *prefix)
 	 * Other cases are errors.
 	 */
 
-	prefix = setup_git_directory_gently(&nongit);
-	git_config(git_diff_ui_config, NULL);
+	/* Were we asked to do --no-index explicitly? */
+	for (i = 1; i < argc; i++) {
+		if (!strcmp(argv[i], "--")) {
+			i++;
+			break;
+		}
+		if (!strcmp(argv[i], "--no-index"))
+			no_index = DIFF_NO_INDEX_EXPLICIT;
+		if (argv[i][0] != '-')
+			break;
+	}
 
-	if (diff_use_color_default == -1)
-		diff_use_color_default = git_use_color_default;
+	prefix = setup_git_directory_gently(&nongit);
+
+	if (!no_index) {
+		/*
+		 * Treat git diff with at least one path outside of the
+		 * repo the same as if the command would have been executed
+		 * outside of a git repository.  In this case it behaves
+		 * the same way as "git diff --no-index <a> <b>", which acts
+		 * as a colourful "diff" replacement.
+		 */
+		if (nongit || ((argc == i + 2) &&
+			       (!path_inside_repo(prefix, argv[i]) ||
+				!path_inside_repo(prefix, argv[i + 1]))))
+			no_index = DIFF_NO_INDEX_IMPLICIT;
+	}
+
+	if (!no_index)
+		gitmodules_config();
+	init_diff_ui_defaults();
+	git_config(git_diff_ui_config, NULL);
+	precompose_argv(argc, argv);
 
 	init_revisions(&rev, prefix);
 
-	/* If this is a no-index diff, just run it and exit there. */
-	diff_no_index(&rev, argc, argv, nongit, prefix);
+	if (no_index && argc != i + 2) {
+		if (no_index == DIFF_NO_INDEX_IMPLICIT) {
+			/*
+			 * There was no --no-index and there were not two
+			 * paths. It is possible that the user intended
+			 * to do an inside-repository operation.
+			 */
+			fprintf(stderr, "Not a git repository\n");
+			fprintf(stderr,
+				"To compare two paths outside a working tree:\n");
+		}
+		/* Give the usage message for non-repository usage and exit. */
+		usagef("git diff %s <path> <path>",
+		       no_index == DIFF_NO_INDEX_EXPLICIT ?
+		       "--no-index" : "[--no-index]");
+
+	}
+	if (no_index)
+		/* If this is a no-index diff, just run it and exit there. */
+		diff_no_index(&rev, argc, argv);
 
 	/* Otherwise, we are doing the usual "git" diff */
 	rev.diffopt.skip_stat_unmatch = !!diff_auto_refresh_index;
+
+	/* Scale to real terminal size and respect statGraphWidth config */
+	rev.diffopt.stat_width = -1;
+	rev.diffopt.stat_graph_width = -1;
 
 	/* Default to let external and textconv be used */
 	DIFF_OPT_SET(&rev.diffopt, ALLOW_EXTERNAL);
 	DIFF_OPT_SET(&rev.diffopt, ALLOW_TEXTCONV);
 
 	if (nongit)
-		die("Not a git repository");
+		die(_("Not a git repository"));
 	argc = setup_revisions(argc, argv, &rev, NULL);
 	if (!rev.diffopt.output_format) {
 		rev.diffopt.output_format = DIFF_FORMAT_PATCH;
-		if (diff_setup_done(&rev.diffopt) < 0)
-			die("diff_setup_done failed");
+		diff_setup_done(&rev.diffopt);
 	}
 
 	DIFF_OPT_SET(&rev.diffopt, RECURSIVE);
 
-	/*
-	 * If the user asked for our exit code then don't start a
-	 * pager or we would end up reporting its exit code instead.
-	 */
-	if (!DIFF_OPT_TST(&rev.diffopt, EXIT_WITH_STATUS) &&
-	    check_pager_config("diff") != 0)
-		setup_pager();
+	setup_diff_pager(&rev.diffopt);
 
 	/*
 	 * Do we have --cached and not have a pending object, then
@@ -328,61 +380,49 @@ int cmd_diff(int argc, const char **argv, const char *prefix)
 			else if (!strcmp(arg, "--cached") ||
 				 !strcmp(arg, "--staged")) {
 				add_head_to_pending(&rev);
-				if (!rev.pending.nr)
-					die("No HEAD commit to compare with (yet)");
+				if (!rev.pending.nr) {
+					struct tree *tree;
+					tree = lookup_tree(&empty_tree_oid);
+					add_pending_object(&rev, &tree->object, "HEAD");
+				}
 				break;
 			}
 		}
 	}
 
 	for (i = 0; i < rev.pending.nr; i++) {
-		struct object_array_entry *list = rev.pending.objects+i;
-		struct object *obj = list->item;
-		const char *name = list->name;
+		struct object_array_entry *entry = &rev.pending.objects[i];
+		struct object *obj = entry->item;
+		const char *name = entry->name;
 		int flags = (obj->flags & UNINTERESTING);
 		if (!obj->parsed)
-			obj = parse_object(obj->sha1);
+			obj = parse_object(&obj->oid);
 		obj = deref_tag(obj, NULL, 0);
 		if (!obj)
-			die("invalid object '%s' given.", name);
+			die(_("invalid object '%s' given."), name);
 		if (obj->type == OBJ_COMMIT)
 			obj = &((struct commit *)obj)->tree->object;
-		if (obj->type == OBJ_TREE) {
-			if (ARRAY_SIZE(ent) <= ents)
-				die("more than %d trees given: '%s'",
-				    (int) ARRAY_SIZE(ent), name);
-			obj->flags |= flags;
-			ent[ents].item = obj;
-			ent[ents].name = name;
-			ents++;
-			continue;
-		}
-		if (obj->type == OBJ_BLOB) {
-			if (2 <= blobs)
-				die("more than two blobs given: '%s'", name);
-			hashcpy(blob[blobs].sha1, obj->sha1);
-			blob[blobs].name = name;
-			blob[blobs].mode = list->mode;
-			blobs++;
-			continue;
 
+		if (obj->type == OBJ_TREE) {
+			obj->flags |= flags;
+			add_object_array(obj, name, &ent);
+		} else if (obj->type == OBJ_BLOB) {
+			if (2 <= blobs)
+				die(_("more than two blobs given: '%s'"), name);
+			blob[blobs] = entry;
+			blobs++;
+
+		} else {
+			die(_("unhandled object '%s' given."), name);
 		}
-		die("unhandled object '%s' given.", name);
 	}
-	if (rev.prune_data) {
-		const char **pathspec = rev.prune_data;
-		while (*pathspec) {
-			if (!path)
-				path = *pathspec;
-			paths++;
-			pathspec++;
-		}
-	}
+	if (rev.prune_data.nr)
+		paths += rev.prune_data.nr;
 
 	/*
 	 * Now, do the arguments look reasonable?
 	 */
-	if (!ents) {
+	if (!ent.nr) {
 		switch (blobs) {
 		case 0:
 			result = builtin_diff_files(&rev, argc, argv);
@@ -390,7 +430,7 @@ int cmd_diff(int argc, const char **argv, const char *prefix)
 		case 1:
 			if (paths != 1)
 				usage(builtin_diff_usage);
-			result = builtin_diff_b_f(&rev, argc, argv, blob, path);
+			result = builtin_diff_b_f(&rev, argc, argv, blob);
 			break;
 		case 2:
 			if (paths)
@@ -403,21 +443,26 @@ int cmd_diff(int argc, const char **argv, const char *prefix)
 	}
 	else if (blobs)
 		usage(builtin_diff_usage);
-	else if (ents == 1)
+	else if (ent.nr == 1)
 		result = builtin_diff_index(&rev, argc, argv);
-	else if (ents == 2)
-		result = builtin_diff_tree(&rev, argc, argv, ent);
-	else if ((ents == 3) && (ent[0].item->flags & UNINTERESTING)) {
-		/* diff A...B where there is one sane merge base between
-		 * A and B.  We have ent[0] == merge-base, ent[1] == A,
-		 * and ent[2] == B.  Show diff between the base and B.
+	else if (ent.nr == 2)
+		result = builtin_diff_tree(&rev, argc, argv,
+					   &ent.objects[0], &ent.objects[1]);
+	else if (ent.objects[0].item->flags & UNINTERESTING) {
+		/*
+		 * diff A...B where there is at least one merge base
+		 * between A and B.  We have ent.objects[0] ==
+		 * merge-base, ent.objects[ents-2] == A, and
+		 * ent.objects[ents-1] == B.  Show diff between the
+		 * base and B.  Note that we pick one merge base at
+		 * random if there are more than one.
 		 */
-		ent[1] = ent[2];
-		result = builtin_diff_tree(&rev, argc, argv, ent);
-	}
-	else
+		result = builtin_diff_tree(&rev, argc, argv,
+					   &ent.objects[0],
+					   &ent.objects[ent.nr-1]);
+	} else
 		result = builtin_diff_combined(&rev, argc, argv,
-					     ent, ents);
+					       ent.objects, ent.nr);
 	result = diff_result_code(&rev.diffopt, result);
 	if (1 < rev.diffopt.skip_stat_unmatch)
 		refresh_index_quietly();

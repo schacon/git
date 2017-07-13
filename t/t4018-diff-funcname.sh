@@ -7,78 +7,105 @@ test_description='Test custom diff function name patterns'
 
 . ./test-lib.sh
 
-LF='
+test_expect_success 'setup' '
+	# a non-trivial custom pattern
+	git config diff.custom1.funcname "!static
+!String
+[^ 	].*s.*" &&
+
+	# a custom pattern which matches to end of line
+	git config diff.custom2.funcname "......Beer\$" &&
+
+	# alternation in pattern
+	git config diff.custom3.funcname "Beer$" &&
+	git config diff.custom3.xfuncname "^[ 	]*((public|static).*)$" &&
+
+	# for regexp compilation tests
+	echo A >A.java &&
+	echo B >B.java
 '
 
-cat > Beer.java << EOF
-public class Beer
-{
-	int special;
-	public static void main(String args[])
-	{
-		String s=" ";
-		for(int x = 99; x > 0; x--)
-		{
-			System.out.print(x + " bottles of beer on the wall "
-				+ x + " bottles of beer\n"
-				+ "Take one down, pass it around, " + (x - 1)
-				+ " bottles of beer on the wall.\n");
-		}
-		System.out.print("Go to the store, buy some more,\n"
-			+ "99 bottles of beer on the wall.\n");
-	}
-}
-EOF
+diffpatterns="
+	ada
+	bibtex
+	cpp
+	csharp
+	css
+	fortran
+	fountain
+	html
+	java
+	matlab
+	objc
+	pascal
+	perl
+	php
+	python
+	ruby
+	tex
+	custom1
+	custom2
+	custom3
+"
 
-sed 's/beer\\/beer,\\/' < Beer.java > Beer-correct.java
-
-builtin_patterns="bibtex cpp html java objc pascal php python ruby tex"
-for p in $builtin_patterns
+for p in $diffpatterns
 do
 	test_expect_success "builtin $p pattern compiles" '
-		echo "*.java diff=$p" > .gitattributes &&
-		! ( git diff --no-index Beer.java Beer-correct.java 2>&1 |
-			grep "fatal" > /dev/null )
+		echo "*.java diff=$p" >.gitattributes &&
+		test_expect_code 1 git diff --no-index \
+			A.java B.java 2>msg &&
+		test_i18ngrep ! fatal msg &&
+		test_i18ngrep ! error msg
+	'
+	test_expect_success "builtin $p wordRegex pattern compiles" '
+		echo "*.java diff=$p" >.gitattributes &&
+		test_expect_code 1 git diff --no-index --word-diff \
+			A.java B.java 2>msg &&
+		test_i18ngrep ! fatal msg &&
+		test_i18ngrep ! error msg
 	'
 done
 
-test_expect_success 'default behaviour' '
-	rm -f .gitattributes &&
-	git diff --no-index Beer.java Beer-correct.java |
-	grep "^@@.*@@ public class Beer"
-'
-
-test_expect_success 'preset java pattern' '
-	echo "*.java diff=java" >.gitattributes &&
-	git diff --no-index Beer.java Beer-correct.java |
-	grep "^@@.*@@ public static void main("
-'
-
-git config diff.java.funcname '!static
-!String
-[^ 	].*s.*'
-
-test_expect_success 'custom pattern' '
-	git diff --no-index Beer.java Beer-correct.java |
-	grep "^@@.*@@ int special;$"
-'
-
 test_expect_success 'last regexp must not be negated' '
-	git config diff.java.funcname "!static" &&
-	git diff --no-index Beer.java Beer-correct.java 2>&1 |
-	grep "fatal: Last expression must not be negated:"
+	echo "*.java diff=java" >.gitattributes &&
+	test_config diff.java.funcname "!static" &&
+	test_expect_code 128 git diff --no-index A.java B.java 2>msg &&
+	test_i18ngrep ": Last expression must not be negated:" msg
 '
 
-test_expect_success 'pattern which matches to end of line' '
-	git config diff.java.funcname "Beer$" &&
-	git diff --no-index Beer.java Beer-correct.java |
-	grep "^@@.*@@ Beer"
+test_expect_success 'setup hunk header tests' '
+	for i in $diffpatterns
+	do
+		echo "$i-* diff=$i"
+	done > .gitattributes &&
+
+	# add all test files to the index
+	(
+		cd "$TEST_DIRECTORY"/t4018 &&
+		git --git-dir="$TRASH_DIRECTORY/.git" add .
+	) &&
+
+	# place modified files in the worktree
+	for i in $(git ls-files)
+	do
+		sed -e "s/ChangeMe/IWasChanged/" <"$TEST_DIRECTORY/t4018/$i" >"$i" || return 1
+	done
 '
 
-test_expect_success 'alternation in pattern' '
-	git config diff.java.xfuncname "^[ 	]*((public|static).*)$" &&
-	git diff --no-index Beer.java Beer-correct.java |
-	grep "^@@.*@@ public static void main("
-'
+# check each individual file
+for i in $(git ls-files)
+do
+	if grep broken "$i" >/dev/null 2>&1
+	then
+		result=failure
+	else
+		result=success
+	fi
+	test_expect_$result "hunk header: $i" "
+		test_when_finished 'cat actual' &&	# for debugging only
+		git diff -U1 $i >actual &&
+		grep '@@ .* @@.*RIGHT' actual
+	"
+done
 
 test_done

@@ -9,8 +9,8 @@ git-fmt-merge-msg - Produce a merge commit message
 SYNOPSIS
 --------
 [verse]
-'git fmt-merge-msg' [--log | --no-log] <$GIT_DIR/FETCH_HEAD
-'git fmt-merge-msg' [--log | --no-log] -F <file>
+'git fmt-merge-msg' [-m <message>] [--log[=<n>] | --no-log]
+'git fmt-merge-msg' [-m <message>] [--log[=<n>] | --no-log] -F <file>
 
 DESCRIPTION
 -----------
@@ -24,19 +24,25 @@ automatically invoking 'git merge'.
 OPTIONS
 -------
 
---log::
+--log[=<n>]::
 	In addition to branch names, populate the log message with
 	one-line descriptions from the actual commits that are being
-	merged.
+	merged.  At most <n> commits from each merge parent will be
+	used (20 if <n> is omitted).  This overrides the `merge.log`
+	configuration variable.
 
 --no-log::
 	Do not list one-line descriptions from the actual commits being
 	merged.
 
---summary::
---no-summary::
+--[no-]summary::
 	Synonyms to --log and --no-log; these are deprecated and will be
 	removed in the future.
+
+-m <message>::
+--message <message>::
+	Use <message> instead of the branch names for the first line
+	of the log message.  For use with `--log`.
 
 -F <file>::
 --file <file>::
@@ -45,27 +51,27 @@ OPTIONS
 
 CONFIGURATION
 -------------
-
-merge.log::
-	Whether to include summaries of merged commits in newly
-	merge commit messages. False by default.
+include::fmt-merge-msg-config.txt[]
 
 merge.summary::
 	Synonym to `merge.log`; this is deprecated and will be removed in
 	the future.
 
+EXAMPLE
+-------
+
+---------
+$ git fetch origin master
+$ git fmt-merge-msg --log <$GIT_DIR/FETCH_HEAD
+---------
+
+Print a log message describing a merge of the "master" branch from
+the "origin" remote.
+
+
 SEE ALSO
 --------
 linkgit:git-merge[1]
-
-
-Author
-------
-Written by Junio C Hamano <gitster@pobox.com>
-
-Documentation
---------------
-Documentation by Petr Baudis, Junio C Hamano and the git-list <git@vger.kernel.org>.
 
 GIT
 ---

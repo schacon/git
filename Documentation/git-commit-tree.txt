@@ -8,7 +8,11 @@ git-commit-tree - Create a new commit object
 
 SYNOPSIS
 --------
-'git commit-tree' <tree> [-p <parent commit>]\* < changelog
+[verse]
+'git commit-tree' <tree> [(-p <parent>)...]
+'git commit-tree' [(-p <parent>)...] [-S[<keyid>]] [(-m <message>)...]
+		  [(-F <file>)...] <tree>
+
 
 DESCRIPTION
 -----------
@@ -16,7 +20,8 @@ This is usually not what an end user wants to run directly.  See
 linkgit:git-commit[1] instead.
 
 Creates a new commit object based on the provided tree object and
-emits the new commit object id on stdout.
+emits the new commit object id on stdout. The log message is read
+from the standard input, unless `-m` or `-F` options are given.
 
 A commit object may have any number of parents. With exactly one
 parent, it is an ordinary commit. Having more than one parent makes
@@ -27,7 +32,7 @@ While a tree represents a particular directory state of a working
 directory, a commit represents that state in "time", and explains how
 to get there.
 
-Normally a commit would identify a new "HEAD" state, and while git
+Normally a commit would identify a new "HEAD" state, and while Git
 doesn't care where you save the note about that state, in practice we
 tend to just write the result to the file that is pointed at by
 `.git/HEAD`, so that we can always see what the last committed
@@ -38,8 +43,26 @@ OPTIONS
 <tree>::
 	An existing tree object
 
--p <parent commit>::
-	Each '-p' indicates the id of a parent commit object.
+-p <parent>::
+	Each `-p` indicates the id of a parent commit object.
+
+-m <message>::
+	A paragraph in the commit log message. This can be given more than
+	once and each <message> becomes its own paragraph.
+
+-F <file>::
+	Read the commit log message from the given file. Use `-` to read
+	from the standard input.
+
+-S[<keyid>]::
+--gpg-sign[=<keyid>]::
+	GPG-sign commits. The `keyid` argument is optional and
+	defaults to the committer identity; if specified, it must be
+	stuck to the option without a space.
+
+--no-gpg-sign::
+	Do not GPG-sign commit, to countermand a `--gpg-sign` option
+	given earlier on the command line.
 
 
 Commit Information
@@ -61,13 +84,15 @@ if set:
 	GIT_COMMITTER_NAME
 	GIT_COMMITTER_EMAIL
 	GIT_COMMITTER_DATE
-	EMAIL
 
 (nb "<", ">" and "\n"s are stripped)
 
 In case (some of) these environment variables are not set, the information
 is taken from the configuration items user.name and user.email, or, if not
-present, system user name and fully qualified hostname.
+present, the environment variable EMAIL, or, if that is not set,
+system user name and the hostname used for outgoing mail (taken
+from `/etc/mailname` and falling back to the fully qualified hostname when
+that file does not exist).
 
 A commit comment is read from stdin. If a changelog
 entry is not provided via "<" redirection, 'git commit-tree' will just wait
@@ -75,32 +100,18 @@ for one to be entered and terminated with ^D.
 
 include::date-formats.txt[]
 
-Diagnostics
------------
-You don't exist. Go away!::
-    The passwd(5) gecos field couldn't be read
-Your parents must have hated you!::
-    The passwd(5) gecos field is longer than a giant static buffer.
-Your sysadmin must hate you!::
-    The passwd(5) name field is longer than a giant static buffer.
-
 Discussion
 ----------
 
 include::i18n.txt[]
 
+FILES
+-----
+/etc/mailname
+
 SEE ALSO
 --------
 linkgit:git-write-tree[1]
-
-
-Author
-------
-Written by Linus Torvalds <torvalds@osdl.org>
-
-Documentation
---------------
-Documentation by David Greaves, Junio C Hamano and the git-list <git@vger.kernel.org>.
 
 GIT
 ---

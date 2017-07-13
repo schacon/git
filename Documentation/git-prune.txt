@@ -8,6 +8,7 @@ git-prune - Prune all unreachable objects from the object database
 
 SYNOPSIS
 --------
+[verse]
 'git prune' [-n] [-v] [--expire <expire>] [--] [<head>...]
 
 DESCRIPTION
@@ -23,6 +24,8 @@ objects unreachable from any of these head objects from the object database.
 In addition, it
 prunes the unpacked objects that are also found in packs by
 running 'git prune-packed'.
+It also removes entries from .git/shallow that are not reachable by
+any ref.
 
 Note that unreachable, packed objects will remain.  If this is
 not desired, see linkgit:git-repack[1].
@@ -31,10 +34,12 @@ OPTIONS
 -------
 
 -n::
+--dry-run::
 	Do not remove anything; just report what it would
 	remove.
 
 -v::
+--verbose::
 	Report all removed objects.
 
 \--::
@@ -51,12 +56,12 @@ OPTIONS
 EXAMPLE
 -------
 
-To prune objects not used by your repository nor another that
+To prune objects not used by your repository or another that
 borrows from your repository via its
 `.git/objects/info/alternates`:
 
 ------------
-$ git prune $(cd ../another && $(git rev-parse --all))
+$ git prune $(cd ../another && git rev-parse --all)
 ------------
 
 Notes
@@ -75,14 +80,6 @@ SEE ALSO
 linkgit:git-fsck[1],
 linkgit:git-gc[1],
 linkgit:git-reflog[1]
-
-Author
-------
-Written by Linus Torvalds <torvalds@osdl.org>
-
-Documentation
---------------
-Documentation by David Greaves, Junio C Hamano and the git-list <git@vger.kernel.org>.
 
 GIT
 ---

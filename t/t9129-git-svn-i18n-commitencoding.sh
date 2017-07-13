@@ -7,17 +7,19 @@ test_description='git svn honors i18n.commitEncoding in config'
 . ./lib-git-svn.sh
 
 compare_git_head_with () {
-	nr=`wc -l < "$1"`
+	nr=$(wc -l < "$1")
 	a=7
 	b=$(($a + $nr - 1))
 	git cat-file commit HEAD | sed -ne "$a,${b}p" >current &&
 	test_cmp current "$1"
 }
 
+prepare_a_utf8_locale
+
 compare_svn_head_with () {
 	# extract just the log message and strip out committer info.
 	# don't use --limit here since svn 1.1.x doesn't have it,
-	LC_ALL=en_US.UTF-8 svn log `git svn info --url` | perl -w -e '
+	LC_ALL="$a_utf8_locale" svn log $(git svn info --url) | perl -w -e '
 		use bytes;
 		$/ = ("-"x72) . "\n";
 		my @x = <STDIN>;
@@ -68,12 +70,6 @@ do
 	)
 	'
 done
-
-if locale -a |grep -q en_US.utf8; then
-	test_set_prereq UTF8
-else
-	say "UTF-8 locale not available, test skipped"
-fi
 
 test_expect_success UTF8 'ISO-8859-1 should match UTF-8 in svn' '
 	(

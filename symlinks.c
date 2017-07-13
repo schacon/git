@@ -1,5 +1,8 @@
 #include "cache.h"
 
+static int threaded_check_leading_path(struct cache_def *cache, const char *name, int len);
+static int threaded_has_dirs_only_path(struct cache_def *cache, const char *name, int len, int prefix_len);
+
 /*
  * Returns the length (on a path component basis) of the longest
  * common prefix match of 'name_a' and 'name_b'.
@@ -32,12 +35,11 @@ static int longest_path_match(const char *name_a, int len_a,
 	return match_len;
 }
 
-static struct cache_def default_cache;
+static struct cache_def default_cache = CACHE_DEF_INIT;
 
 static inline void reset_lstat_cache(struct cache_def *cache)
 {
-	cache->path[0] = '\0';
-	cache->len = 0;
+	strbuf_reset(&cache->path);
 	cache->flags = 0;
 	/*
 	 * The track_flags and prefix_len_stat_func members is only
@@ -64,11 +66,13 @@ static inline void reset_lstat_cache(struct cache_def *cache)
  * of the prefix, where the cache should use the stat() function
  * instead of the lstat() function to test each path component.
  */
-static int lstat_cache(struct cache_def *cache, const char *name, int len,
-		       int track_flags, int prefix_len_stat_func)
+static int lstat_cache_matchlen(struct cache_def *cache,
+				const char *name, int len,
+				int *ret_flags, int track_flags,
+				int prefix_len_stat_func)
 {
 	int match_len, last_slash, last_slash_dir, previous_slash;
-	int match_flags, ret_flags, save_flags, max_len, ret;
+	int save_flags, ret;
 	struct stat st;
 
 	if (cache->track_flags != track_flags ||
@@ -88,15 +92,15 @@ static int lstat_cache(struct cache_def *cache, const char *name, int len,
 		 * the 2 "excluding" path types.
 		 */
 		match_len = last_slash =
-			longest_path_match(name, len, cache->path, cache->len,
-					   &previous_slash);
-		match_flags = cache->flags & track_flags & (FL_NOENT|FL_SYMLINK);
+			longest_path_match(name, len, cache->path.buf,
+					   cache->path.len, &previous_slash);
+		*ret_flags = cache->flags & track_flags & (FL_NOENT|FL_SYMLINK);
 
 		if (!(track_flags & FL_FULLPATH) && match_len == len)
 			match_len = last_slash = previous_slash;
 
-		if (match_flags && match_len == cache->len)
-			return match_flags;
+		if (*ret_flags && match_len == cache->path.len)
+			return match_len;
 		/*
 		 * If we now have match_len > 0, we would know that
 		 * the matched part will always be a directory.
@@ -105,44 +109,45 @@ static int lstat_cache(struct cache_def *cache, const char *name, int len,
 		 * a substring of the cache on a path component basis,
 		 * we can return immediately.
 		 */
-		match_flags = track_flags & FL_DIR;
-		if (match_flags && len == match_len)
-			return match_flags;
+		*ret_flags = track_flags & FL_DIR;
+		if (*ret_flags && len == match_len)
+			return match_len;
 	}
 
 	/*
 	 * Okay, no match from the cache so far, so now we have to
 	 * check the rest of the path components.
 	 */
-	ret_flags = FL_DIR;
+	*ret_flags = FL_DIR;
 	last_slash_dir = last_slash;
-	max_len = len < PATH_MAX ? len : PATH_MAX;
-	while (match_len < max_len) {
+	if (len > cache->path.len)
+		strbuf_grow(&cache->path, len - cache->path.len);
+	while (match_len < len) {
 		do {
-			cache->path[match_len] = name[match_len];
+			cache->path.buf[match_len] = name[match_len];
 			match_len++;
-		} while (match_len < max_len && name[match_len] != '/');
-		if (match_len >= max_len && !(track_flags & FL_FULLPATH))
+		} while (match_len < len && name[match_len] != '/');
+		if (match_len >= len && !(track_flags & FL_FULLPATH))
 			break;
 		last_slash = match_len;
-		cache->path[last_slash] = '\0';
+		cache->path.buf[last_slash] = '\0';
 
 		if (last_slash <= prefix_len_stat_func)
-			ret = stat(cache->path, &st);
+			ret = stat(cache->path.buf, &st);
 		else
-			ret = lstat(cache->path, &st);
+			ret = lstat(cache->path.buf, &st);
 
 		if (ret) {
-			ret_flags = FL_LSTATERR;
+			*ret_flags = FL_LSTATERR;
 			if (errno == ENOENT)
-				ret_flags |= FL_NOENT;
+				*ret_flags |= FL_NOENT;
 		} else if (S_ISDIR(st.st_mode)) {
 			last_slash_dir = last_slash;
 			continue;
 		} else if (S_ISLNK(st.st_mode)) {
-			ret_flags = FL_SYMLINK;
+			*ret_flags = FL_SYMLINK;
 		} else {
-			ret_flags = FL_ERR;
+			*ret_flags = FL_ERR;
 		}
 		break;
 	}
@@ -152,13 +157,12 @@ static int lstat_cache(struct cache_def *cache, const char *name, int len,
 	 * path types, FL_NOENT, FL_SYMLINK and FL_DIR, can be cached
 	 * for the moment!
 	 */
-	save_flags = ret_flags & track_flags & (FL_NOENT|FL_SYMLINK);
-	if (save_flags && last_slash > 0 && last_slash <= PATH_MAX) {
-		cache->path[last_slash] = '\0';
-		cache->len = last_slash;
+	save_flags = *ret_flags & track_flags & (FL_NOENT|FL_SYMLINK);
+	if (save_flags && last_slash > 0) {
+		cache->path.buf[last_slash] = '\0';
+		cache->path.len = last_slash;
 		cache->flags = save_flags;
-	} else if ((track_flags & FL_DIR) &&
-		   last_slash_dir > 0 && last_slash_dir <= PATH_MAX) {
+	} else if ((track_flags & FL_DIR) && last_slash_dir > 0) {
 		/*
 		 * We have a separate test for the directory case,
 		 * since it could be that we have found a symlink or a
@@ -170,13 +174,22 @@ static int lstat_cache(struct cache_def *cache, const char *name, int len,
 		 * can still cache the path components before the last
 		 * one (the found symlink or non-existing component).
 		 */
-		cache->path[last_slash_dir] = '\0';
-		cache->len = last_slash_dir;
+		cache->path.buf[last_slash_dir] = '\0';
+		cache->path.len = last_slash_dir;
 		cache->flags = FL_DIR;
 	} else {
 		reset_lstat_cache(cache);
 	}
-	return ret_flags;
+	return match_len;
+}
+
+static int lstat_cache(struct cache_def *cache, const char *name, int len,
+		       int track_flags, int prefix_len_stat_func)
+{
+	int flags;
+	(void)lstat_cache_matchlen(cache, name, len, &flags, track_flags,
+			prefix_len_stat_func);
+	return flags;
 }
 
 #define USE_ONLY_LSTAT  0
@@ -198,15 +211,39 @@ int has_symlink_leading_path(const char *name, int len)
 }
 
 /*
- * Return non-zero if path 'name' has a leading symlink component or
+ * Return zero if path 'name' has a leading symlink component or
  * if some leading path component does not exists.
+ *
+ * Return -1 if leading path exists and is a directory.
+ *
+ * Return path length if leading path exists and is neither a
+ * directory nor a symlink.
  */
-int has_symlink_or_noent_leading_path(const char *name, int len)
+int check_leading_path(const char *name, int len)
 {
-	struct cache_def *cache = &default_cache;	/* FIXME */
-	return lstat_cache(cache, name, len,
-			   FL_SYMLINK|FL_NOENT|FL_DIR, USE_ONLY_LSTAT) &
-		(FL_SYMLINK|FL_NOENT);
+    return threaded_check_leading_path(&default_cache, name, len);
+}
+
+/*
+ * Return zero if path 'name' has a leading symlink component or
+ * if some leading path component does not exists.
+ *
+ * Return -1 if leading path exists and is a directory.
+ *
+ * Return path length if leading path exists and is neither a
+ * directory nor a symlink.
+ */
+static int threaded_check_leading_path(struct cache_def *cache, const char *name, int len)
+{
+	int flags;
+	int match_len = lstat_cache_matchlen(cache, name, len, &flags,
+			   FL_SYMLINK|FL_NOENT|FL_DIR, USE_ONLY_LSTAT);
+	if (flags & FL_NOENT)
+		return 0;
+	else if (flags & FL_DIR)
+		return -1;
+	else
+		return match_len;
 }
 
 /*
@@ -218,27 +255,35 @@ int has_symlink_or_noent_leading_path(const char *name, int len)
  */
 int has_dirs_only_path(const char *name, int len, int prefix_len)
 {
-	struct cache_def *cache = &default_cache;	/* FIXME */
+	return threaded_has_dirs_only_path(&default_cache, name, len, prefix_len);
+}
+
+/*
+ * Return non-zero if all path components of 'name' exists as a
+ * directory.  If prefix_len > 0, we will test with the stat()
+ * function instead of the lstat() function for a prefix length of
+ * 'prefix_len', thus we then allow for symlinks in the prefix part as
+ * long as those points to real existing directories.
+ */
+static int threaded_has_dirs_only_path(struct cache_def *cache, const char *name, int len, int prefix_len)
+{
 	return lstat_cache(cache, name, len,
 			   FL_DIR|FL_FULLPATH, prefix_len) &
 		FL_DIR;
 }
 
-static struct removal_def {
-	char path[PATH_MAX];
-	int len;
-} removal;
+static struct strbuf removal = STRBUF_INIT;
 
 static void do_remove_scheduled_dirs(int new_len)
 {
 	while (removal.len > new_len) {
-		removal.path[removal.len] = '\0';
-		if (rmdir(removal.path))
+		removal.buf[removal.len] = '\0';
+		if (rmdir(removal.buf))
 			break;
 		do {
 			removal.len--;
 		} while (removal.len > new_len &&
-			 removal.path[removal.len] != '/');
+			 removal.buf[removal.len] != '/');
 	}
 	removal.len = new_len;
 }
@@ -248,7 +293,7 @@ void schedule_dir_for_removal(const char *name, int len)
 	int match_len, last_slash, i, previous_slash;
 
 	match_len = last_slash = i =
-		longest_path_match(name, len, removal.path, removal.len,
+		longest_path_match(name, len, removal.buf, removal.len,
 				   &previous_slash);
 	/* Find last slash inside 'name' */
 	while (i < len) {
@@ -268,11 +313,8 @@ void schedule_dir_for_removal(const char *name, int len)
 	 * If we go deeper down the directory tree, we only need to
 	 * save the new path components as we go down.
 	 */
-	if (match_len < last_slash) {
-		memcpy(&removal.path[match_len], &name[match_len],
-		       last_slash - match_len);
-		removal.len = last_slash;
-	}
+	if (match_len < last_slash)
+		strbuf_add(&removal, &name[match_len], last_slash - match_len);
 }
 
 void remove_scheduled_dirs(void)

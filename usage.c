@@ -4,34 +4,63 @@
  * Copyright (C) Linus Torvalds, 2005
  */
 #include "git-compat-util.h"
+#include "cache.h"
 
-static void report(const char *prefix, const char *err, va_list params)
+void vreportf(const char *prefix, const char *err, va_list params)
 {
 	char msg[4096];
+	char *p;
+
 	vsnprintf(msg, sizeof(msg), err, params);
+	for (p = msg; *p; p++) {
+		if (iscntrl(*p) && *p != '\t' && *p != '\n')
+			*p = '?';
+	}
 	fprintf(stderr, "%s%s\n", prefix, msg);
 }
 
 static NORETURN void usage_builtin(const char *err, va_list params)
 {
-	report("usage: ", err, params);
+	vreportf("usage: ", err, params);
 	exit(129);
 }
 
 static NORETURN void die_builtin(const char *err, va_list params)
 {
-	report("fatal: ", err, params);
+	vreportf("fatal: ", err, params);
 	exit(128);
 }
 
 static void error_builtin(const char *err, va_list params)
 {
-	report("error: ", err, params);
+	vreportf("error: ", err, params);
 }
 
 static void warn_builtin(const char *warn, va_list params)
 {
-	report("warning: ", warn, params);
+	vreportf("warning: ", warn, params);
+}
+
+static int die_is_recursing_builtin(void)
+{
+	static int dying;
+	/*
+	 * Just an arbitrary number X where "a < x < b" where "a" is
+	 * "maximum number of pthreads we'll ever plausibly spawn" and
+	 * "b" is "something less than Inf", since the point is to
+	 * prevent infinite recursion.
+	 */
+	static const int recursion_limit = 1024;
+
+	dying++;
+	if (dying > recursion_limit) {
+		return 1;
+	} else if (dying == 2) {
+		warning("die() called many times. Recursion error or racy threaded death!");
+		return 0;
+	} else {
+		return 0;
+	}
 }
 
 /* If we are in a dlopen()ed .so write to a global variable would segfault
@@ -40,13 +69,39 @@ static NORETURN_PTR void (*usage_routine)(const char *err, va_list params) = usa
 static NORETURN_PTR void (*die_routine)(const char *err, va_list params) = die_builtin;
 static void (*error_routine)(const char *err, va_list params) = error_builtin;
 static void (*warn_routine)(const char *err, va_list params) = warn_builtin;
+static int (*die_is_recursing)(void) = die_is_recursing_builtin;
 
 void set_die_routine(NORETURN_PTR void (*routine)(const char *err, va_list params))
 {
 	die_routine = routine;
 }
 
-void usagef(const char *err, ...)
+void set_error_routine(void (*routine)(const char *err, va_list params))
+{
+	error_routine = routine;
+}
+
+void (*get_error_routine(void))(const char *err, va_list params)
+{
+	return error_routine;
+}
+
+void set_warn_routine(void (*routine)(const char *warn, va_list params))
+{
+	warn_routine = routine;
+}
+
+void (*get_warn_routine(void))(const char *warn, va_list params)
+{
+	return warn_routine;
+}
+
+void set_die_is_recursing_routine(int (*routine)(void))
+{
+	die_is_recursing = routine;
+}
+
+void NORETURN usagef(const char *err, ...)
 {
 	va_list params;
 
@@ -55,24 +110,27 @@ void usagef(const char *err, ...)
 	va_end(params);
 }
 
-void usage(const char *err)
+void NORETURN usage(const char *err)
 {
 	usagef("%s", err);
 }
 
-void die(const char *err, ...)
+void NORETURN die(const char *err, ...)
 {
 	va_list params;
+
+	if (die_is_recursing()) {
+		fputs("fatal: recursion detected in die handler\n", stderr);
+		exit(128);
+	}
 
 	va_start(params, err);
 	die_routine(err, params);
 	va_end(params);
 }
 
-void die_errno(const char *fmt, ...)
+static const char *fmt_with_err(char *buf, int n, const char *fmt)
 {
-	va_list params;
-	char fmt_with_err[1024];
 	char str_error[256], *err;
 	int i, j;
 
@@ -90,13 +148,39 @@ void die_errno(const char *fmt, ...)
 		}
 	}
 	str_error[j] = 0;
-	snprintf(fmt_with_err, sizeof(fmt_with_err), "%s: %s", fmt, str_error);
+	snprintf(buf, n, "%s: %s", fmt, str_error);
+	return buf;
+}
+
+void NORETURN die_errno(const char *fmt, ...)
+{
+	char buf[1024];
+	va_list params;
+
+	if (die_is_recursing()) {
+		fputs("fatal: recursion detected in die_errno handler\n",
+			stderr);
+		exit(128);
+	}
 
 	va_start(params, fmt);
-	die_routine(fmt_with_err, params);
+	die_routine(fmt_with_err(buf, sizeof(buf), fmt), params);
 	va_end(params);
 }
 
+#undef error_errno
+int error_errno(const char *fmt, ...)
+{
+	char buf[1024];
+	va_list params;
+
+	va_start(params, fmt);
+	error_routine(fmt_with_err(buf, sizeof(buf), fmt), params);
+	va_end(params);
+	return -1;
+}
+
+#undef error
 int error(const char *err, ...)
 {
 	va_list params;
@@ -107,6 +191,16 @@ int error(const char *err, ...)
 	return -1;
 }
 
+void warning_errno(const char *warn, ...)
+{
+	char buf[1024];
+	va_list params;
+
+	va_start(params, warn);
+	warn_routine(fmt_with_err(buf, sizeof(buf), warn), params);
+	va_end(params);
+}
+
 void warning(const char *warn, ...)
 {
 	va_list params;
@@ -115,3 +209,35 @@ void warning(const char *warn, ...)
 	warn_routine(warn, params);
 	va_end(params);
 }
+
+static NORETURN void BUG_vfl(const char *file, int line, const char *fmt, va_list params)
+{
+	char prefix[256];
+
+	/* truncation via snprintf is OK here */
+	if (file)
+		snprintf(prefix, sizeof(prefix), "BUG: %s:%d: ", file, line);
+	else
+		snprintf(prefix, sizeof(prefix), "BUG: ");
+
+	vreportf(prefix, fmt, params);
+	abort();
+}
+
+#ifdef HAVE_VARIADIC_MACROS
+NORETURN void BUG_fl(const char *file, int line, const char *fmt, ...)
+{
+	va_list ap;
+	va_start(ap, fmt);
+	BUG_vfl(file, line, fmt, ap);
+	va_end(ap);
+}
+#else
+NORETURN void BUG(const char *fmt, ...)
+{
+	va_list ap;
+	va_start(ap, fmt);
+	BUG_vfl(NULL, 0, fmt, ap);
+	va_end(ap);
+}
+#endif

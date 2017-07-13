@@ -3,8 +3,8 @@
  *
  * Copyright (C) Eric Biederman, 2005
  */
-#include "cache.h"
-#include "exec_cmd.h"
+#include "builtin.h"
+#include "config.h"
 
 static const char var_usage[] = "git var (-l | <variable>)";
 
@@ -12,7 +12,7 @@ static const char *editor(int flag)
 {
 	const char *pgm = git_editor();
 
-	if (!pgm && flag & IDENT_ERROR_ON_NO_NAME)
+	if (!pgm && flag & IDENT_STRICT)
 		die("Terminal is dumb, but EDITOR unset");
 
 	return pgm;
@@ -56,7 +56,7 @@ static const char *read_var(const char *var)
 	val = NULL;
 	for (ptr = git_vars; ptr->read; ptr++) {
 		if (strcmp(var, ptr->name) == 0) {
-			val = ptr->read(IDENT_ERROR_ON_NO_NAME);
+			val = ptr->read(IDENT_STRICT);
 			break;
 		}
 	}
@@ -74,14 +74,9 @@ static int show_config(const char *var, const char *value, void *cb)
 
 int cmd_var(int argc, const char **argv, const char *prefix)
 {
-	const char *val;
-	int nongit;
-	if (argc != 2) {
+	const char *val = NULL;
+	if (argc != 2)
 		usage(var_usage);
-	}
-
-	setup_git_directory_gently(&nongit);
-	val = NULL;
 
 	if (strcmp(argv[1], "-l") == 0) {
 		git_config(show_config, NULL);

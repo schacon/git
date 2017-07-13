@@ -10,15 +10,15 @@ test_expect_success setup '
 	echo >subdir/fileB fileB &&
 	git add fileA subdir/fileB &&
 	git commit -a -m "Initial in one history." &&
-	A0=`git rev-parse --verify HEAD` &&
+	A0=$(git rev-parse --verify HEAD) &&
 
 	echo >fileA fileA modified &&
 	git commit -a -m "Second in one history." &&
-	A1=`git rev-parse --verify HEAD` &&
+	A1=$(git rev-parse --verify HEAD) &&
 
 	echo >subdir/fileB fileB modified &&
 	git commit -a -m "Third in one history." &&
-	A2=`git rev-parse --verify HEAD` &&
+	A2=$(git rev-parse --verify HEAD) &&
 
 	rm -f .git/refs/heads/master .git/index &&
 
@@ -26,15 +26,15 @@ test_expect_success setup '
 	echo >subdir/fileB fileB again &&
 	git add fileA subdir/fileB &&
 	git commit -a -m "Initial in alternate history." &&
-	B0=`git rev-parse --verify HEAD` &&
+	B0=$(git rev-parse --verify HEAD) &&
 
 	echo >fileA fileA modified in alternate history &&
 	git commit -a -m "Second in alternate history." &&
-	B1=`git rev-parse --verify HEAD` &&
+	B1=$(git rev-parse --verify HEAD) &&
 
 	echo >subdir/fileB fileB modified in alternate history &&
 	git commit -a -m "Third in alternate history." &&
-	B2=`git rev-parse --verify HEAD` &&
+	B2=$(git rev-parse --verify HEAD) &&
 	: done
 '
 
@@ -84,28 +84,28 @@ check () {
 		git rev-list --parents --pretty=raw $arg |
 		sed -n -e 's/^commit //p' >test.actual
 	fi
-	diff test.expect test.actual
+	test_cmp test.expect test.actual
 }
 
 for type in basic parents parents-raw
 do
 	test_expect_success 'without grafts' "
-		rm -f .git/info/grafts
+		rm -f .git/info/grafts &&
 		check $type $B2 -- $B2 $B1 $B0
 	"
 
 	test_expect_success 'with grafts' "
-		echo '$B0 $A2' >.git/info/grafts
+		echo '$B0 $A2' >.git/info/grafts &&
 		check $type $B2 -- $B2 $B1 $B0 $A2 $A1 $A0
 	"
 
 	test_expect_success 'without grafts, with pathlimit' "
-		rm -f .git/info/grafts
+		rm -f .git/info/grafts &&
 		check $type $B2 subdir -- $B2 $B0
 	"
 
 	test_expect_success 'with grafts, with pathlimit' "
-		echo '$B0 $A2' >.git/info/grafts
+		echo '$B0 $A2' >.git/info/grafts &&
 		check $type $B2 subdir -- $B2 $B0 $A2 $A0
 	"
 

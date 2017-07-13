@@ -9,8 +9,9 @@ test_prefix() {
 }
 
 test_fail() {
-	test_expect_code 128 "$1: prefix" \
-	"git rev-parse --show-prefix"
+	test_expect_success "$1: prefix" '
+		test_expect_code 128 git rev-parse --show-prefix
+	'
 }
 
 TRASH_ROOT="$PWD"
@@ -43,6 +44,10 @@ test_prefix ceil_at_sub ""
 GIT_CEILING_DIRECTORIES="$TRASH_ROOT/sub/"
 test_prefix ceil_at_sub_slash ""
 
+if test_have_prereq SYMLINKS
+then
+	ln -s sub top
+fi
 
 mkdir -p sub/dir || exit 1
 cd sub/dir || exit 1
@@ -66,6 +71,19 @@ test_fail subdir_ceil_at_sub
 
 GIT_CEILING_DIRECTORIES="$TRASH_ROOT/sub/"
 test_fail subdir_ceil_at_sub_slash
+
+if test_have_prereq SYMLINKS
+then
+	GIT_CEILING_DIRECTORIES="$TRASH_ROOT/top"
+	test_fail subdir_ceil_at_top
+	GIT_CEILING_DIRECTORIES="$TRASH_ROOT/top/"
+	test_fail subdir_ceil_at_top_slash
+
+	GIT_CEILING_DIRECTORIES=":$TRASH_ROOT/top"
+	test_prefix subdir_ceil_at_top_no_resolve "sub/dir/"
+	GIT_CEILING_DIRECTORIES=":$TRASH_ROOT/top/"
+	test_prefix subdir_ceil_at_top_slash_no_resolve "sub/dir/"
+fi
 
 GIT_CEILING_DIRECTORIES="$TRASH_ROOT/sub/dir"
 test_prefix subdir_ceil_at_subdir "sub/dir/"

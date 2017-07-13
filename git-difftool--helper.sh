@@ -13,7 +13,8 @@ TOOL_MODE=diff
 should_prompt () {
 	prompt_merge=$(git config --bool mergetool.prompt || echo true)
 	prompt=$(git config --bool difftool.prompt || echo $prompt_merge)
-	if test "$prompt" = true; then
+	if test "$prompt" = true
+	then
 		test -z "$GIT_DIFFTOOL_NO_PROMPT"
 	else
 		test -n "$GIT_DIFFTOOL_PROMPT"
@@ -37,35 +38,68 @@ launch_merge_tool () {
 
 	# $LOCAL and $REMOTE are temporary files so prompt
 	# the user with the real $MERGED name before launching $merge_tool.
-	if should_prompt; then
-		printf "\nViewing: '$MERGED'\n"
-		if use_ext_cmd; then
-			printf "Hit return to launch '%s': " \
+	if should_prompt
+	then
+		printf "\nViewing (%s/%s): '%s'\n" "$GIT_DIFF_PATH_COUNTER" \
+			"$GIT_DIFF_PATH_TOTAL" "$MERGED"
+		if use_ext_cmd
+		then
+			printf "Launch '%s' [Y/n]? " \
 				"$GIT_DIFFTOOL_EXTCMD"
 		else
-			printf "Hit return to launch '%s': " "$merge_tool"
+			printf "Launch '%s' [Y/n]? " "$merge_tool"
 		fi
-		read ans
+		read ans || return
+		if test "$ans" = n
+		then
+			return
+		fi
 	fi
 
-	if use_ext_cmd; then
+	if use_ext_cmd
+	then
+		export BASE
 		eval $GIT_DIFFTOOL_EXTCMD '"$LOCAL"' '"$REMOTE"'
 	else
 		run_merge_tool "$merge_tool"
 	fi
 }
 
-if ! use_ext_cmd; then
-	if test -n "$GIT_DIFF_TOOL"; then
+if ! use_ext_cmd
+then
+	if test -n "$GIT_DIFF_TOOL"
+	then
 		merge_tool="$GIT_DIFF_TOOL"
 	else
 		merge_tool="$(get_merge_tool)" || exit
 	fi
 fi
 
-# Launch the merge tool on each path provided by 'git diff'
-while test $# -gt 6
-do
-	launch_merge_tool "$1" "$2" "$5"
-	shift 7
-done
+if test -n "$GIT_DIFFTOOL_DIRDIFF"
+then
+	LOCAL="$1"
+	REMOTE="$2"
+	run_merge_tool "$merge_tool" false
+else
+	# Launch the merge tool on each path provided by 'git diff'
+	while test $# -gt 6
+	do
+		launch_merge_tool "$1" "$2" "$5"
+		status=$?
+		if test $status -ge 126
+		then
+			# Command not found (127), not executable (126) or
+			# exited via a signal (>= 128).
+			exit $status
+		fi
+
+		if test "$status" != 0 &&
+			test "$GIT_DIFFTOOL_TRUST_EXIT_CODE" = true
+		then
+			exit $status
+		fi
+		shift 7
+	done
+fi
+
+exit 0

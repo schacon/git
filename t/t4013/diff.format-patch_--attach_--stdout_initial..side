@@ -12,10 +12,10 @@ Content-Type: text/plain; charset=UTF-8; format=fixed
 Content-Transfer-Encoding: 8bit
 
 ---
- dir/sub |    2 ++
- file0   |    3 +++
- file3   |    4 ++++
- 3 files changed, 9 insertions(+), 0 deletions(-)
+ dir/sub | 2 ++
+ file0   | 3 +++
+ file3   | 4 ++++
+ 3 files changed, 9 insertions(+)
  create mode 100644 file3
 
 

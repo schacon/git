@@ -9,6 +9,7 @@ git-unpack-file - Creates a temporary file with a blob's contents
 
 SYNOPSIS
 --------
+[verse]
 'git unpack-file' <blob>
 
 DESCRIPTION
@@ -21,14 +22,6 @@ OPTIONS
 -------
 <blob>::
 	Must be a blob id
-
-Author
-------
-Written by Linus Torvalds <torvalds@osdl.org>
-
-Documentation
---------------
-Documentation by David Greaves, Junio C Hamano and the git-list <git@vger.kernel.org>.
 
 GIT
 ---

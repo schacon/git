@@ -1,5 +1,10 @@
 set gitexecdir {@@gitexecdir@@}
-set gitguilib  {@@GITGUI_LIBDIR@@}
+if { [info exists ::env(GIT_GUI_LIB_DIR) ] } {
+	set gitguilib $::env(GIT_GUI_LIB_DIR)
+} else {
+	set gitguilib {@@GITGUI_LIBDIR@@}
+}
+
 set env(PATH) "$gitexecdir:$env(PATH)"
 
 if {[string first -psn [lindex $argv 0]] == 0} {
@@ -12,7 +17,9 @@ if {[file tail [lindex $argv 0]] eq {gitk}} {
 } else {
 	set argv0 [file join $gitexecdir [file tail [lindex $argv 0]]]
 	set AppMain_source [file join $gitguilib git-gui.tcl]
-	if {[pwd] eq {/}} {
+	if {[info exists env(PWD)]} {
+		cd $env(PWD)
+	} elseif {[pwd] eq {/}} {
 		cd $env(HOME)
 	}
 }

@@ -1,11 +1,11 @@
 Packfile transfer protocols
 ===========================
 
-Git supports transferring data in packfiles over the ssh://, git:// and
+Git supports transferring data in packfiles over the ssh://, git://, http:// and
 file:// transports.  There exist two sets of protocols, one for pushing
 data from a client to a server and another for fetching data from a
-server to a client.  All three transports (ssh, git, file) use the same
-protocol to transfer data.
+server to a client.  The three transports (ssh, git, file) use the same
+protocol to transfer data. http is documented in http-protocol.txt.
 
 The processes invoked in the canonical Git implementation are 'upload-pack'
 on the server side and 'fetch-pack' on the client side for fetching data;
@@ -13,6 +13,14 @@ then 'receive-pack' on the server and 'send-pack' on the client for pushing
 data.  The protocol functions to have a server tell a client what is
 currently on the server, then for the two to negotiate the smallest amount
 of data to send in order to fully update one or the other.
+
+pkt-line Format
+---------------
+
+The descriptions below build on the pkt-line format described in
+protocol-common.txt. When the grammar indicate `PKT-LINE(...)`, unless
+otherwise noted the usual pkt-line LF rules apply: the sender SHOULD
+include a LF, but the receiver MUST NOT complain if it is not present.
 
 Transports
 ----------
@@ -59,6 +67,13 @@ process on the server side over the Git protocol is this:
    $ echo -e -n \
      "0039git-upload-pack /schacon/gitbook.git\0host=example.com\0" |
      nc -v example.com 9418
+
+If the server refuses the request for some reasons, it could abort
+gracefully with an error message.
+
+----
+  error-line     =  PKT-LINE("ERR" SP explanation-text)
+----
 
 
 SSH Transport
@@ -110,7 +125,7 @@ A few things to remember here:
 - The repository path is always quoted with single quotes.
 
 Fetching Data From a Server
-===========================
+---------------------------
 
 When one Git repository wants to get data that a second repository
 has, the first can 'fetch' from the second.  This operation determines
@@ -127,16 +142,14 @@ with the object name that each reference currently points to.
 
    $ echo -e -n "0039git-upload-pack /schacon/gitbook.git\0host=example.com\0" |
       nc -v example.com 9418
-   00887217a7c7e582c46cec22a130adf4b9d7d950fba0 HEAD\0multi_ack thin-pack side-band side-band-64k ofs-delta shallow no-progress include-tag
+   00887217a7c7e582c46cec22a130adf4b9d7d950fba0 HEAD\0multi_ack thin-pack
+		side-band side-band-64k ofs-delta shallow no-progress include-tag
    00441d3fcd5ced445d1abc402225c0b8a1299641f497 refs/heads/integration
    003f7217a7c7e582c46cec22a130adf4b9d7d950fba0 refs/heads/master
    003cb88d2441cac0977faf98efc80305012112238d9d refs/tags/v0.9
    003c525128480b96c89e6418b1e40909bf6c5b2d580f refs/tags/v1.0
    003fe92df48743b7bc7d26bcaabfddde0a1e20cae47c refs/tags/v1.0^{}
    0000
-
-Server SHOULD terminate each non-flush line using LF ("\n") terminator;
-client MUST NOT complain if there is no terminator.
 
 The returned response is a pkt-line stream describing each ref and
 its current value.  The stream MUST be sorted by name according to
@@ -153,18 +166,21 @@ MUST peel the ref if it's an annotated tag.
 
 ----
   advertised-refs  =  (no-refs / list-of-refs)
+		      *shallow
 		      flush-pkt
 
   no-refs          =  PKT-LINE(zero-id SP "capabilities^{}"
-		      NUL capability-list LF)
+		      NUL capability-list)
 
   list-of-refs     =  first-ref *other-ref
   first-ref        =  PKT-LINE(obj-id SP refname
-		      NUL capability-list LF)
+		      NUL capability-list)
 
   other-ref        =  PKT-LINE(other-tip / other-peeled)
-  other-tip        =  obj-id SP refname LF
-  other-peeled     =  obj-id SP refname "^{}" LF
+  other-tip        =  obj-id SP refname
+  other-peeled     =  obj-id SP refname "^{}"
+
+  shallow          =  PKT-LINE("shallow" SP obj-id)
 
   capability-list  =  capability *(SP capability)
   capability       =  1*(LC_ALPHA / DIGIT / "-" / "_")
@@ -179,34 +195,38 @@ and descriptions.
 
 Packfile Negotiation
 --------------------
-After reference and capabilities discovery, the client can decide
-to terminate the connection by sending a flush-pkt, telling the
-server it can now gracefully terminate (as happens with the ls-remote
-command) or it can enter the negotiation phase, where the client and
-server determine what the minimal packfile necessary for transport is.
+After reference and capabilities discovery, the client can decide to
+terminate the connection by sending a flush-pkt, telling the server it can
+now gracefully terminate, and disconnect, when it does not need any pack
+data. This can happen with the ls-remote command, and also can happen when
+the client already is up-to-date.
 
-Once the client has the initial list of references that the server
-has, as well as the list of capabilities, it will begin telling the
-server what objects it wants and what objects it has, so the server
-can make a packfile that only contains the objects that the client needs.
-The client will also send a list of the capabilities it wants to be in
-effect, out of what the server said it could do with the first 'want' line.
+Otherwise, it enters the negotiation phase, where the client and
+server determine what the minimal packfile necessary for transport is,
+by telling the server what objects it wants, its shallow objects
+(if any), and the maximum commit depth it wants (if any).  The client
+will also send a list of the capabilities it wants to be in effect,
+out of what the server said it could do with the first 'want' line.
 
 ----
   upload-request    =  want-list
-		       have-list
-		       compute-end
+		       *shallow-line
+		       *1depth-request
+		       flush-pkt
 
   want-list         =  first-want
 		       *additional-want
-		       flush-pkt
 
-  first-want        =  PKT-LINE("want" SP obj-id SP capability-list LF)
-  additional-want   =  PKT-LINE("want" SP obj-id LF)
+  shallow-line      =  PKT-LINE("shallow" SP obj-id)
 
-  have-list         =  *have-line
-  have-line         =  PKT-LINE("have" SP obj-id LF)
-  compute-end       =  flush-pkt / PKT-LINE("done")
+  depth-request     =  PKT-LINE("deepen" SP depth) /
+		       PKT-LINE("deepen-since" SP timestamp) /
+		       PKT-LINE("deepen-not" SP ref)
+
+  first-want        =  PKT-LINE("want" SP obj-id SP capability-list)
+  additional-want   =  PKT-LINE("want" SP obj-id)
+
+  depth             =  1*DIGIT
 ----
 
 Clients MUST send all the obj-ids it wants from the reference
@@ -215,21 +235,65 @@ discovery phase as 'want' lines. Clients MUST send at least one
 obj-id in a 'want' command which did not appear in the response
 obtained through ref discovery.
 
-If client is requesting a shallow clone, it will now send a 'deepen'
-line with the depth it is requesting.
+The client MUST write all obj-ids which it only has shallow copies
+of (meaning that it does not have the parents of a commit) as
+'shallow' lines so that the server is aware of the limitations of
+the client's history.
 
-Once all the "want"s (and optional 'deepen') are transferred,
-clients MUST send a flush-pkt. If the client has all the references
-on the server, client flushes and disconnects.
+The client now sends the maximum commit history depth it wants for
+this transaction, which is the number of commits it wants from the
+tip of the history, if any, as a 'deepen' line.  A depth of 0 is the
+same as not making a depth request. The client does not want to receive
+any commits beyond this depth, nor does it want objects needed only to
+complete those commits. Commits whose parents are not received as a
+result are defined as shallow and marked as such in the server. This
+information is sent back to the client in the next step.
 
-TODO: shallow/unshallow response and document the deepen command in the ABNF.
+Once all the 'want's and 'shallow's (and optional 'deepen') are
+transferred, clients MUST send a flush-pkt, to tell the server side
+that it is done sending the list.
+
+Otherwise, if the client sent a positive depth request, the server
+will determine which commits will and will not be shallow and
+send this information to the client. If the client did not request
+a positive depth, this step is skipped.
+
+----
+  shallow-update   =  *shallow-line
+		      *unshallow-line
+		      flush-pkt
+
+  shallow-line     =  PKT-LINE("shallow" SP obj-id)
+
+  unshallow-line   =  PKT-LINE("unshallow" SP obj-id)
+----
+
+If the client has requested a positive depth, the server will compute
+the set of commits which are no deeper than the desired depth. The set
+of commits start at the client's wants.
+
+The server writes 'shallow' lines for each
+commit whose parents will not be sent as a result. The server writes
+an 'unshallow' line for each commit which the client has indicated is
+shallow, but is no longer shallow at the currently requested depth
+(that is, its parents will now be sent). The server MUST NOT mark
+as unshallow anything which the client has not indicated was shallow.
 
 Now the client will send a list of the obj-ids it has using 'have'
-lines.  In multi_ack mode, the canonical implementation will send up
-to 32 of these at a time, then will send a flush-pkt.  The canonical
-implementation will skip ahead and send the next 32 immediately,
-so that there is always a block of 32 "in-flight on the wire" at a
-time.
+lines, so the server can make a packfile that only contains the objects
+that the client needs. In multi_ack mode, the canonical implementation
+will send up to 32 of these at a time, then will send a flush-pkt. The
+canonical implementation will skip ahead and send the next 32 immediately,
+so that there is always a block of 32 "in-flight on the wire" at a time.
+
+----
+  upload-haves      =  have-list
+		       compute-end
+
+  have-list         =  *have-line
+  have-line         =  PKT-LINE("have" SP obj-id)
+  compute-end       =  flush-pkt / PKT-LINE("done")
+----
 
 If the server reads 'have' lines, it then will respond by ACKing any
 of the obj-ids the client said it had that the server also has. The
@@ -245,7 +309,7 @@ In multi_ack mode:
     ready to make a packfile, it will blindly ACK all 'have' obj-ids
     back to the client.
 
-  * the server will then send a 'NACK' and then wait for another response
+  * the server will then send a 'NAK' and then wait for another response
     from the client - either a 'done' or another list of 'have' lines.
 
 In multi_ack_detailed mode:
@@ -281,25 +345,31 @@ during a prior round.  This helps to ensure that at least one common
 ancestor is found before we give up entirely.
 
 Once the 'done' line is read from the client, the server will either
-send a final 'ACK obj-id' or it will send a 'NAK'. The server only sends
+send a final 'ACK obj-id' or it will send a 'NAK'. 'obj-id' is the object
+name of the last commit determined to be common. The server only sends
 ACK after 'done' if there is at least one common base and multi_ack or
 multi_ack_detailed is enabled. The server always sends NAK after 'done'
 if there is no common base found.
 
+Instead of 'ACK' or 'NAK', the server may send an error message (for
+example, if it does not recognize an object in a 'want' line received
+from the client).
+
 Then the server will start sending its packfile data.
 
 ----
-  server-response = *ack_multi ack / nak
-  ack_multi       = PKT-LINE("ACK" SP obj-id ack_status LF)
+  server-response = *ack_multi ack / nak / error-line
+  ack_multi       = PKT-LINE("ACK" SP obj-id ack_status)
   ack_status      = "continue" / "common" / "ready"
-  ack             = PKT-LINE("ACK SP obj-id LF)
-  nak             = PKT-LINE("NAK" LF)
+  ack             = PKT-LINE("ACK" SP obj-id)
+  nak             = PKT-LINE("NAK")
+  error-line     =  PKT-LINE("ERR" SP explanation-text)
 ----
 
 A simple clone may look like this (with no 'have' lines):
 
 ----
-   C: 0054want 74730d410fcb6603ace96f1dc55ea6196122532d\0multi_ack \
+   C: 0054want 74730d410fcb6603ace96f1dc55ea6196122532d multi_ack \
      side-band-64k ofs-delta\n
    C: 0032want 7d1665144a3a975c05f1f43902ddaf084e784dbe\n
    C: 0032want 5a3f6be755bbb7deae50065988cbfa1ffa9ab68a\n
@@ -315,7 +385,7 @@ A simple clone may look like this (with no 'have' lines):
 An incremental update (fetch) response might look like this:
 
 ----
-   C: 0054want 74730d410fcb6603ace96f1dc55ea6196122532d\0multi_ack \
+   C: 0054want 74730d410fcb6603ace96f1dc55ea6196122532d multi_ack \
      side-band-64k ofs-delta\n
    C: 0032want 7d1665144a3a975c05f1f43902ddaf084e784dbe\n
    C: 0032want 5a3f6be755bbb7deae50065988cbfa1ffa9ab68a\n
@@ -367,7 +437,7 @@ entire packfile without multiplexing.
 
 
 Pushing Data To a Server
-========================
+------------------------
 
 Pushing data to a server will invoke the 'receive-pack' process on the
 server, which will allow the client to tell it which references it should
@@ -391,7 +461,8 @@ The reference discovery phase is done nearly the same way as it is in the
 fetching protocol. Each reference obj-id and name on the server is sent
 in packet-line format to the client, followed by a flush-pkt.  The only
 real difference is that the capability listing is different - the only
-possible values are 'report-status', 'delete-refs' and 'ofs-delta'.
+possible values are 'report-status', 'delete-refs', 'ofs-delta' and
+'push-options'.
 
 Reference Update Request and Packfile Transfer
 ----------------------------------------------
@@ -402,15 +473,15 @@ that it wants to update, it sends a line listing the obj-id currently on
 the server, the obj-id the client would like to update it to and the name
 of the reference.
 
-This list is followed by a flush-pkt and then the packfile that should
-contain all the objects that the server will need to complete the new
-references.
+This list is followed by a flush-pkt.
 
 ----
-  update-request    =  command-list [pack-file]
+  update-requests   =  *shallow ( command-list | push-cert )
 
-  command-list      =  PKT-LINE(command NUL capability-list LF)
-		       *PKT-LINE(command LF)
+  shallow           =  PKT-LINE("shallow" SP obj-id)
+
+  command-list      =  PKT-LINE(command NUL capability-list)
+		       *PKT-LINE(command)
 		       flush-pkt
 
   command           =  create / delete / update
@@ -421,17 +492,55 @@ references.
   old-id            =  obj-id
   new-id            =  obj-id
 
-  pack-file         = "PACK" 28*(OCTET)
+  push-cert         = PKT-LINE("push-cert" NUL capability-list LF)
+		      PKT-LINE("certificate version 0.1" LF)
+		      PKT-LINE("pusher" SP ident LF)
+		      PKT-LINE("pushee" SP url LF)
+		      PKT-LINE("nonce" SP nonce LF)
+		      *PKT-LINE("push-option" SP push-option LF)
+		      PKT-LINE(LF)
+		      *PKT-LINE(command LF)
+		      *PKT-LINE(gpg-signature-lines LF)
+		      PKT-LINE("push-cert-end" LF)
+
+  push-option       =  1*( VCHAR | SP )
+----
+
+If the server has advertised the 'push-options' capability and the client has
+specified 'push-options' as part of the capability list above, the client then
+sends its push options followed by a flush-pkt.
+
+----
+  push-options      =  *PKT-LINE(push-option) flush-pkt
+----
+
+For backwards compatibility with older Git servers, if the client sends a push
+cert and push options, it MUST send its push options both embedded within the
+push cert and after the push cert. (Note that the push options within the cert
+are prefixed, but the push options after the cert are not.) Both these lists
+MUST be the same, modulo the prefix.
+
+After that the packfile that
+should contain all the objects that the server will need to complete the new
+references will be sent.
+
+----
+  packfile          =  "PACK" 28*(OCTET)
 ----
 
 If the receiving end does not support delete-refs, the sending end MUST
 NOT ask for delete command.
 
-The pack-file MUST NOT be sent if the only command used is 'delete'.
+If the receiving end does not support push-cert, the sending end
+MUST NOT send a push-cert command.  When a push-cert command is
+sent, command-list MUST NOT be sent; the commands recorded in the
+push certificate is used instead.
 
-A pack-file MUST be sent if either create or update command is used,
+The packfile MUST NOT be sent if the only command used is 'delete'.
+
+A packfile MUST be sent if either create or update command is used,
 even if the server already has all the necessary objects.  In this
-case the client MUST send an empty pack-file.   The only time this
+case the client MUST send an empty packfile.   The only time this
 is likely to happen is if the client is creating
 a new branch or a tag that points to an existing obj-id.
 
@@ -440,6 +549,35 @@ reference that is being updated that it hasn't changed while the request
 was being processed (the obj-id is still the same as the old-id), and
 it will run any update hooks to make sure that the update is acceptable.
 If all of that is fine, the server will then update the references.
+
+Push Certificate
+----------------
+
+A push certificate begins with a set of header lines.  After the
+header and an empty line, the protocol commands follow, one per
+line. Note that the trailing LF in push-cert PKT-LINEs is _not_
+optional; it must be present.
+
+Currently, the following header fields are defined:
+
+`pusher` ident::
+	Identify the GPG key in "Human Readable Name <email@address>"
+	format.
+
+`pushee` url::
+	The repository URL (anonymized, if the URL contains
+	authentication material) the user who ran `git push`
+	intended to push into.
+
+`nonce` nonce::
+	The 'nonce' string the receiving repository asked the
+	pushing user to include in the certificate, to prevent
+	replay attacks.
+
+The GPG signature lines are a detached signature for the contents
+recorded in the push certificate before the signature block begins.
+The detached signature is used to certify that the commands were
+given by the pusher, who must be the signer.
 
 Report Status
 -------------
@@ -457,12 +595,12 @@ update was successful, or 'ng [refname] [error]' if the update was not.
 		      1*(command-status)
 		      flush-pkt
 
-  unpack-status     = PKT-LINE("unpack" SP unpack-result LF)
+  unpack-status     = PKT-LINE("unpack" SP unpack-result)
   unpack-result     = "ok" / error-msg
 
   command-status    = command-ok / command-fail
-  command-ok        = PKT-LINE("ok" SP refname LF)
-  command-fail      = PKT-LINE("ng" SP refname SP error-msg LF)
+  command-ok        = PKT-LINE("ok" SP refname)
+  command-fail      = PKT-LINE("ng" SP refname SP error-msg)
 
   error-msg         = 1*(OCTECT) ; where not "ok"
 ----

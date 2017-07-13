@@ -20,6 +20,9 @@ test_expect_success 'setup: create a few commits with notes' '
 	git add file3 &&
 	test_tick &&
 	git commit -m 3rd &&
+	COMMIT_FILE=.git/objects/5e/e1c35e83ea47cd3cc4f8cbee0568915fbbbd29 &&
+	test -f $COMMIT_FILE &&
+	test-chmtime =+0 $COMMIT_FILE &&
 	git notes add -m "Note #3"
 '
 
@@ -67,7 +70,7 @@ test_expect_success 'remove some commits' '
 
 test_expect_success 'verify that commits are gone' '
 
-	! git cat-file -p 5ee1c35e83ea47cd3cc4f8cbee0568915fbbbd29 &&
+	test_must_fail git cat-file -p 5ee1c35e83ea47cd3cc4f8cbee0568915fbbbd29 &&
 	git cat-file -p 08341ad9e94faa089d60fd3f523affb25c6da189 &&
 	git cat-file -p ab5f302035f2e7aaf04265f08b42034c23256e1f
 '
@@ -106,7 +109,7 @@ test_expect_success 'prune notes' '
 
 test_expect_success 'verify that notes are gone' '
 
-	! git notes show 5ee1c35e83ea47cd3cc4f8cbee0568915fbbbd29 &&
+	test_must_fail git notes show 5ee1c35e83ea47cd3cc4f8cbee0568915fbbbd29 &&
 	git notes show 08341ad9e94faa089d60fd3f523affb25c6da189 &&
 	git notes show ab5f302035f2e7aaf04265f08b42034c23256e1f
 '
@@ -130,8 +133,8 @@ test_expect_success 'prune -v notes' '
 
 test_expect_success 'verify that notes are gone' '
 
-	! git notes show 5ee1c35e83ea47cd3cc4f8cbee0568915fbbbd29 &&
-	! git notes show 08341ad9e94faa089d60fd3f523affb25c6da189 &&
+	test_must_fail git notes show 5ee1c35e83ea47cd3cc4f8cbee0568915fbbbd29 &&
+	test_must_fail git notes show 08341ad9e94faa089d60fd3f523affb25c6da189 &&
 	git notes show ab5f302035f2e7aaf04265f08b42034c23256e1f
 '
 

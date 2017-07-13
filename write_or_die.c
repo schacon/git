@@ -1,4 +1,5 @@
 #include "cache.h"
+#include "run-command.h"
 
 /*
  * Some cases use stdio, but want to flush after the write
@@ -34,14 +35,23 @@ void maybe_flush_or_die(FILE *f, const char *desc)
 			return;
 	}
 	if (fflush(f)) {
-		/*
-		 * On Windows, EPIPE is returned only by the first write()
-		 * after the reading end has closed its handle; subsequent
-		 * write()s return EINVAL.
-		 */
-		if (errno == EPIPE || errno == EINVAL)
-			exit(0);
+		check_pipe(errno);
 		die_errno("write failure on '%s'", desc);
+	}
+}
+
+void fprintf_or_die(FILE *f, const char *fmt, ...)
+{
+	va_list ap;
+	int ret;
+
+	va_start(ap, fmt);
+	ret = vfprintf(f, fmt, ap);
+	va_end(ap);
+
+	if (ret < 0) {
+		check_pipe(errno);
+		die_errno("write error");
 	}
 }
 
@@ -55,32 +65,7 @@ void fsync_or_die(int fd, const char *msg)
 void write_or_die(int fd, const void *buf, size_t count)
 {
 	if (write_in_full(fd, buf, count) < 0) {
-		if (errno == EPIPE)
-			exit(0);
+		check_pipe(errno);
 		die_errno("write error");
 	}
-}
-
-int write_or_whine_pipe(int fd, const void *buf, size_t count, const char *msg)
-{
-	if (write_in_full(fd, buf, count) < 0) {
-		if (errno == EPIPE)
-			exit(0);
-		fprintf(stderr, "%s: write error (%s)\n",
-			msg, strerror(errno));
-		return 0;
-	}
-
-	return 1;
-}
-
-int write_or_whine(int fd, const void *buf, size_t count, const char *msg)
-{
-	if (write_in_full(fd, buf, count) < 0) {
-		fprintf(stderr, "%s: write error (%s)\n",
-			msg, strerror(errno));
-		return 0;
-	}
-
-	return 1;
 }

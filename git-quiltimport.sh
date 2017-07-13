@@ -1,11 +1,13 @@
 #!/bin/sh
 OPTIONS_KEEPDASHDASH=
+OPTIONS_STUCKLONG=
 OPTIONS_SPEC="\
 git quiltimport [options]
 --
 n,dry-run     dry run
 author=       author name and email address for patches without any
-patches=      path to the quilt series and patches
+patches=      path to the quilt patches
+series=       path to the quilt series file
 "
 SUBDIRECTORY_ON=Yes
 . git-sh-setup
@@ -25,6 +27,10 @@ do
 	--patches)
 		shift
 		QUILT_PATCHES="$1"
+		;;
+	--series)
+		shift
+		QUILT_SERIES="$1"
 		;;
 	--)
 		shift
@@ -52,6 +58,13 @@ if ! [ -d "$QUILT_PATCHES" ] ; then
 	exit 1
 fi
 
+# Quilt series file
+: ${QUILT_SERIES:=$QUILT_PATCHES/series}
+if ! [ -e "$QUILT_SERIES" ] ; then
+	echo "The \"$QUILT_SERIES\" file does not exist."
+	exit 1
+fi
+
 # Temporary directories
 tmp_dir="$GIT_DIR"/rebase-apply
 tmp_msg="$tmp_dir/msg"
@@ -59,7 +72,7 @@ tmp_patch="$tmp_dir/patch"
 tmp_info="$tmp_dir/info"
 
 
-# Find the intial commit
+# Find the initial commit
 commit=$(git rev-parse HEAD)
 
 mkdir $tmp_dir || exit 2
@@ -134,5 +147,5 @@ do
 		commit=$( (echo "$SUBJECT"; echo; cat "$tmp_msg") | git commit-tree $tree -p $commit) &&
 		git update-ref -m "quiltimport: $patch_name" HEAD $commit || exit 4
 	fi
-done 3<"$QUILT_PATCHES/series"
+done 3<"$QUILT_SERIES"
 rm -rf $tmp_dir || exit 5

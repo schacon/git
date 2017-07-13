@@ -4,7 +4,7 @@ test_description='pushing to a mirror repository'
 
 . ./test-lib.sh
 
-D=`pwd`
+D=$(pwd)
 
 invert () {
 	if "$@"; then
@@ -256,7 +256,7 @@ test_expect_success 'remote.foo.mirror=no has no effect' '
 		git branch keep master &&
 		git push --mirror up &&
 		git branch -D keep &&
-		git push up
+		git push up :
 	) &&
 	(
 		cd mirror &&

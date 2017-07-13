@@ -57,7 +57,7 @@ compare_mtimes ()
 {
 	read tref rest &&
 	while read t rest; do
-		test "$tref" = "$t" || break
+		test "$tref" = "$t" || return 1
 	done
 }
 
@@ -93,6 +93,61 @@ test_expect_success 'unpacked objects receive timestamp of pack file' '
 	test-chmtime -v +0 "$tmppack" "$fsha1path" "$csha1path" "$tsha1path" \
 		> mtimes &&
 	compare_mtimes < mtimes
+'
+
+test_expect_success 'do not bother loosening old objects' '
+	obj1=$(echo one | git hash-object -w --stdin) &&
+	obj2=$(echo two | git hash-object -w --stdin) &&
+	pack1=$(echo $obj1 | git pack-objects .git/objects/pack/pack) &&
+	pack2=$(echo $obj2 | git pack-objects .git/objects/pack/pack) &&
+	git prune-packed &&
+	git cat-file -p $obj1 &&
+	git cat-file -p $obj2 &&
+	test-chmtime =-86400 .git/objects/pack/pack-$pack2.pack &&
+	git repack -A -d --unpack-unreachable=1.hour.ago &&
+	git cat-file -p $obj1 &&
+	test_must_fail git cat-file -p $obj2
+'
+
+test_expect_success 'keep packed objects found only in index' '
+	echo my-unique-content >file &&
+	git add file &&
+	git commit -m "make it reachable" &&
+	git gc &&
+	git reset HEAD^ &&
+	git reflog expire --expire=now --all &&
+	git add file &&
+	test-chmtime =-86400 .git/objects/pack/* &&
+	git gc --prune=1.hour.ago &&
+	git cat-file blob :file
+'
+
+test_expect_success 'repack -k keeps unreachable packed objects' '
+	# create packed-but-unreachable object
+	sha1=$(echo unreachable-packed | git hash-object -w --stdin) &&
+	pack=$(echo $sha1 | git pack-objects .git/objects/pack/pack) &&
+	git prune-packed &&
+
+	# -k should keep it
+	git repack -adk &&
+	git cat-file -p $sha1 &&
+
+	# and double check that without -k it would have been removed
+	git repack -ad &&
+	test_must_fail git cat-file -p $sha1
+'
+
+test_expect_success 'repack -k packs unreachable loose objects' '
+	# create loose unreachable object
+	sha1=$(echo would-be-deleted-loose | git hash-object -w --stdin) &&
+	objpath=.git/objects/$(echo $sha1 | sed "s,..,&/,") &&
+	test_path_is_file $objpath &&
+
+	# and confirm that the loose object goes away, but we can
+	# still access it (ergo, it is packed)
+	git repack -adk &&
+	test_path_is_missing $objpath &&
+	git cat-file -p $sha1
 '
 
 test_done

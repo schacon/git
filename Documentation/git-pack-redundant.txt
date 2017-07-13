@@ -8,6 +8,7 @@ git-pack-redundant - Find redundant pack files
 
 SYNOPSIS
 --------
+[verse]
 'git pack-redundant' [ --verbose ] [ --alt-odb ] < --all | .pack filename ... >
 
 DESCRIPTION
@@ -37,14 +38,6 @@ OPTIONS
 
 --verbose::
 	Outputs some statistics to stderr. Has a small performance penalty.
-
-Author
-------
-Written by Lukas Sandström <lukass@etek.chalmers.se>
-
-Documentation
---------------
-Documentation by Lukas Sandström <lukass@etek.chalmers.se>
 
 SEE ALSO
 --------

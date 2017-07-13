@@ -1,6 +1,19 @@
 # git-gui diff viewer
 # Copyright (C) 2006, 2007 Shawn Pearce
 
+proc apply_tab_size {{firsttab {}}} {
+	global have_tk85 repo_config ui_diff
+
+	set w [font measure font_diff "0"]
+	if {$have_tk85 && $firsttab != 0} {
+		$ui_diff configure -tabs [list [expr {$firsttab * $w}] [expr {($firsttab + $repo_config(gui.tabsize)) * $w}]]
+	} elseif {$have_tk85 || $repo_config(gui.tabsize) != 8} {
+		$ui_diff configure -tabs [expr {$repo_config(gui.tabsize) * $w}]
+	} else {
+		$ui_diff configure -tabs {}
+	}
+}
+
 proc clear_diff {} {
 	global ui_diff current_diff_path current_diff_header
 	global ui_index ui_workdir
@@ -55,7 +68,7 @@ proc handle_empty_diff {} {
 
 	set path $current_diff_path
 	set s $file_states($path)
-	if {[lindex $s 0] ne {_M}} return
+	if {[lindex $s 0] ne {_M} || [has_textconv $path]} return
 
 	# Prevent infinite rescan loops
 	incr diff_empty_count
@@ -105,6 +118,8 @@ proc show_diff {path w {lno {}} {scroll_pos {}} {callback {}}} {
 
 	set cont_info [list $scroll_pos $callback]
 
+	apply_tab_size 0
+
 	if {[string first {U} $m] >= 0} {
 		merge_load_stages $path [list show_unmerged_diff $cont_info]
 	} elseif {$m eq {_O}} {
@@ -112,6 +127,9 @@ proc show_diff {path w {lno {}} {scroll_pos {}} {callback {}}} {
 	} else {
 		start_show_diff $cont_info
 	}
+
+	global current_diff_path selected_paths
+	set selected_paths($current_diff_path) 1
 }
 
 proc show_unmerged_diff {cont_info} {
@@ -122,22 +140,22 @@ proc show_unmerged_diff {cont_info} {
 	if {$merge_stages(2) eq {}} {
 		set is_conflict_diff 1
 		lappend current_diff_queue \
-			[list [mc "LOCAL: deleted\nREMOTE:\n"] d======= \
+			[list [mc "LOCAL: deleted\nREMOTE:\n"] d= \
 			    [list ":1:$current_diff_path" ":3:$current_diff_path"]]
 	} elseif {$merge_stages(3) eq {}} {
 		set is_conflict_diff 1
 		lappend current_diff_queue \
-			[list [mc "REMOTE: deleted\nLOCAL:\n"] d======= \
+			[list [mc "REMOTE: deleted\nLOCAL:\n"] d= \
 			    [list ":1:$current_diff_path" ":2:$current_diff_path"]]
 	} elseif {[lindex $merge_stages(1) 0] eq {120000}
 		|| [lindex $merge_stages(2) 0] eq {120000}
 		|| [lindex $merge_stages(3) 0] eq {120000}} {
 		set is_conflict_diff 1
 		lappend current_diff_queue \
-			[list [mc "LOCAL:\n"] d======= \
+			[list [mc "LOCAL:\n"] d= \
 			    [list ":1:$current_diff_path" ":2:$current_diff_path"]]
 		lappend current_diff_queue \
-			[list [mc "REMOTE:\n"] d======= \
+			[list [mc "REMOTE:\n"] d= \
 			    [list ":1:$current_diff_path" ":3:$current_diff_path"]]
 	} else {
 		start_show_diff $cont_info
@@ -205,35 +223,34 @@ proc show_other_diff {path w m cont_info} {
 		}
 		$ui_diff conf -state normal
 		if {$type eq {submodule}} {
-			$ui_diff insert end [append \
-				"* " \
-				[mc "Git Repository (subproject)"] \
-				"\n"] d_@
+			$ui_diff insert end \
+				"* [mc "Git Repository (subproject)"]\n" \
+				d_info
 		} elseif {![catch {set type [exec file $path]}]} {
 			set n [string length $path]
 			if {[string equal -length $n $path $type]} {
 				set type [string range $type $n end]
 				regsub {^:?\s*} $type {} type
 			}
-			$ui_diff insert end "* $type\n" d_@
+			$ui_diff insert end "* $type\n" d_info
 		}
 		if {[string first "\0" $content] != -1} {
 			$ui_diff insert end \
 				[mc "* Binary file (not showing content)."] \
-				d_@
+				d_info
 		} else {
 			if {$sz > $max_sz} {
 				$ui_diff insert end [mc \
 "* Untracked file is %d bytes.
 * Showing only first %d bytes.
-" $sz $max_sz] d_@
+" $sz $max_sz] d_info
 			}
 			$ui_diff insert end $content
 			if {$sz > $max_sz} {
 				$ui_diff insert end [mc "
 * Untracked file clipped here by %s.
 * To see the entire file, use an external editor.
-" [appname]] d_@
+" [appname]] d_info
 			}
 		}
 		$ui_diff conf -state disabled
@@ -253,6 +270,19 @@ proc show_other_diff {path w m cont_info} {
 	}
 }
 
+proc get_conflict_marker_size {path} {
+	set size 7
+	catch {
+		set fd_rc [eval [list git_read check-attr "conflict-marker-size" -- $path]]
+		set ret [gets $fd_rc line]
+		close $fd_rc
+		if {$ret > 0} {
+			regexp {.*: conflict-marker-size: (\d+)$} $line line size
+		}
+	}
+	return $size
+}
+
 proc start_show_diff {cont_info {add_opts {}}} {
 	global file_states file_lists
 	global is_3way_diff is_submodule_diff diff_active repo_config
@@ -268,17 +298,24 @@ proc start_show_diff {cont_info {add_opts {}}} {
 	set is_submodule_diff 0
 	set diff_active 1
 	set current_diff_header {}
+	set conflict_size [get_conflict_marker_size $path]
 
 	set cmd [list]
 	if {$w eq $ui_index} {
 		lappend cmd diff-index
 		lappend cmd --cached
+		if {[git-version >= "1.7.2"]} {
+			lappend cmd --ignore-submodules=dirty
+		}
 	} elseif {$w eq $ui_workdir} {
 		if {[string first {U} $m] >= 0} {
 			lappend cmd diff
 		} else {
 			lappend cmd diff-files
 		}
+	}
+	if {![is_config_false gui.textconv] && [git-version >= 1.6.1]} {
+		lappend cmd --textconv
 	}
 
 	if {[string match {160000 *} [lindex $s 2]]
@@ -291,7 +328,8 @@ proc start_show_diff {cont_info {add_opts {}}} {
 	}
 
 	lappend cmd -p
-	lappend cmd --no-color
+	lappend cmd --color
+	set cmd [concat $cmd $repo_config(gui.diffopts)]
 	if {$repo_config(gui.diffcontext) >= 1} {
 		lappend cmd "-U$repo_config(gui.diffcontext)"
 	}
@@ -326,10 +364,35 @@ proc start_show_diff {cont_info {add_opts {}}} {
 		-blocking 0 \
 		-encoding [get_path_encoding $path] \
 		-translation lf
-	fileevent $fd readable [list read_diff $fd $cont_info]
+	fileevent $fd readable [list read_diff $fd $conflict_size $cont_info]
 }
 
-proc read_diff {fd cont_info} {
+proc parse_color_line {line} {
+	set start 0
+	set result ""
+	set markup [list]
+	set regexp {\033\[((?:\d+;)*\d+)?m}
+	set need_reset 0
+	while {[regexp -indices -start $start $regexp $line match code]} {
+		foreach {begin end} $match break
+		append result [string range $line $start [expr {$begin - 1}]]
+		set pos [string length $result]
+		set col [eval [linsert $code 0 string range $line]]
+		set start [incr end]
+		if {$col eq "0" || $col eq ""} {
+			if {!$need_reset} continue
+			set need_reset 0
+		} else {
+			set need_reset 1
+		}
+		lappend markup $pos $col
+	}
+	append result [string range $line $start end]
+	if {[llength $markup] < 4} {set markup {}}
+	return [list $result $markup]
+}
+
+proc read_diff {fd conflict_size cont_info} {
 	global ui_diff diff_active is_submodule_diff
 	global is_3way_diff is_conflict_diff current_diff_header
 	global current_diff_queue
@@ -337,37 +400,56 @@ proc read_diff {fd cont_info} {
 
 	$ui_diff conf -state normal
 	while {[gets $fd line] >= 0} {
-		# -- Cleanup uninteresting diff header lines.
+		foreach {line markup} [parse_color_line $line] break
+		set line [string map {\033 ^} $line]
+
+		set tags {}
+
+		# -- Check for start of diff header.
+		if {   [string match {diff --git *}      $line]
+		    || [string match {diff --cc *}       $line]
+		    || [string match {diff --combined *} $line]} {
+			set ::current_diff_inheader 1
+		}
+
+		# -- Check for end of diff header (any hunk line will do this).
 		#
+		if {[regexp {^@@+ } $line]} {set ::current_diff_inheader 0}
+
+		# -- Automatically detect if this is a 3 way diff.
+		#
+		if {[string match {@@@ *} $line]} {
+			set is_3way_diff 1
+			apply_tab_size 1
+		}
+
 		if {$::current_diff_inheader} {
+
+			# -- These two lines stop a diff header and shouldn't be in there
+			if {   [string match {Binary files * and * differ} $line]
+			    || [regexp {^\* Unmerged path }                $line]} {
+				set ::current_diff_inheader 0
+			} else {
+				append current_diff_header $line "\n"
+			}
+
+			# -- Cleanup uninteresting diff header lines.
+			#
 			if {   [string match {diff --git *}      $line]
 			    || [string match {diff --cc *}       $line]
 			    || [string match {diff --combined *} $line]
 			    || [string match {--- *}             $line]
-			    || [string match {+++ *}             $line]} {
-				append current_diff_header $line "\n"
+			    || [string match {+++ *}             $line]
+			    || [string match {index *}           $line]} {
 				continue
 			}
-		}
-		if {[string match {index *} $line]} continue
-		if {$line eq {deleted file mode 120000}} {
-			set line "deleted symlink"
-		}
-		set ::current_diff_inheader 0
 
-		# -- Automatically detect if this is a 3 way diff.
-		#
-		if {[string match {@@@ *} $line]} {set is_3way_diff 1}
+			# -- Name it symlink, not 120000
+			#    Note, that the original line is in $current_diff_header
+			regsub {^(deleted|new) file mode 120000} $line {\1 symlink} line
 
-		if {[string match {mode *} $line]
-			|| [string match {new file *} $line]
-			|| [regexp {^(old|new) mode *} $line]
-			|| [string match {deleted file *} $line]
-			|| [string match {deleted symlink} $line]
-			|| [string match {Binary files * and * differ} $line]
-			|| $line eq {\ No newline at end of file}
-			|| [regexp {^\* Unmerged path } $line]} {
-			set tags {}
+		} elseif {   $line eq {\ No newline at end of file}} {
+			# -- Handle some special lines
 		} elseif {$is_3way_diff} {
 			set op [string range $line 0 1]
 			switch -- $op {
@@ -379,7 +461,9 @@ proc read_diff {fd cont_info} {
 			{- } {set tags d_-s}
 			{--} {set tags d_--}
 			{++} {
-				if {[regexp {^\+\+([<>]{7} |={7})} $line _g op]} {
+				set regexp [string map [list %conflict_size $conflict_size]\
+								{^\+\+([<>=]){%conflict_size}(?: |$)}]
+				if {[regexp $regexp $line _g op]} {
 					set is_conflict_diff 1
 					set line [string replace $line 0 1 {  }]
 					set tags d$op
@@ -395,10 +479,10 @@ proc read_diff {fd cont_info} {
 		} elseif {$is_submodule_diff} {
 			if {$line == ""} continue
 			if {[regexp {^Submodule } $line]} {
-				set tags d_@
+				set tags d_info
 			} elseif {[regexp {^\* } $line]} {
 				set line [string replace $line 0 1 {Submodule }]
-				set tags d_@
+				set tags d_info
 			} else {
 				set op [string range $line 0 2]
 				switch -- $op {
@@ -418,7 +502,9 @@ proc read_diff {fd cont_info} {
 			{@} {set tags d_@}
 			{-} {set tags d_-}
 			{+} {
-				if {[regexp {^\+([<>]{7} |={7})} $line _g op]} {
+				set regexp [string map [list %conflict_size $conflict_size]\
+								{^\+([<>=]){%conflict_size}(?: |$)}]
+				if {[regexp $regexp $line _g op]} {
 					set is_conflict_diff 1
 					set tags d$op
 				} else {
@@ -431,11 +517,23 @@ proc read_diff {fd cont_info} {
 			}
 			}
 		}
+		set mark [$ui_diff index "end - 1 line linestart"]
 		$ui_diff insert end $line $tags
 		if {[string index $line end] eq "\r"} {
 			$ui_diff tag add d_cr {end - 2c}
 		}
 		$ui_diff insert end "\n" $tags
+
+		foreach {posbegin colbegin posend colend} $markup {
+			set prefix clr
+			foreach style [lsort -integer [split $colbegin ";"]] {
+				if {$style eq "7"} {append prefix i; continue}
+				if {$style != 4 && ($style < 30 || $style > 47)} {continue}
+				set a "$mark linestart + $posbegin chars"
+				set b "$mark linestart + $posend chars"
+				catch {$ui_diff tag add $prefix$style $a $b}
+			}
+		}
 	}
 	$ui_diff conf -state disabled
 
@@ -512,7 +610,7 @@ proc apply_hunk {x y} {
 		puts -nonewline $p $current_diff_header
 		puts -nonewline $p [$ui_diff get $s_lno $e_lno]
 		close $p} err]} {
-		error_popup [append $failed_msg "\n\n$err"]
+		error_popup "$failed_msg\n\n$err"
 		unlock_index
 		return
 	}
@@ -689,8 +787,15 @@ proc apply_range_or_line {x y} {
 				# context line
 				set ln [$ui_diff get $i_l $next_l]
 				set patch "$patch$pre_context$ln"
-				set n [expr $n+1]
-				set m [expr $m+1]
+				# Skip the "\ No newline at end of
+				# file". Depending on the locale setting
+				# we don't know what this line looks
+				# like exactly. The only thing we do
+				# know is that it starts with "\ "
+				if {![string match {\\ *} $ln]} {
+					set n [expr $n+1]
+					set m [expr $m+1]
+				}
 				set pre_context {}
 			} elseif {$c1 eq $to_context} {
 				# turn change line into context line
@@ -723,7 +828,7 @@ proc apply_range_or_line {x y} {
 		puts -nonewline $p $current_diff_header
 		puts -nonewline $p $wholepatch
 		close $p} err]} {
-		error_popup [append $failed_msg "\n\n$err"]
+		error_popup "$failed_msg\n\n$err"
 	}
 
 	unlock_index

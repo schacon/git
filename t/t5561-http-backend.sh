@@ -2,13 +2,6 @@
 
 test_description='test git-http-backend'
 . ./test-lib.sh
-
-if test -n "$NO_CURL"; then
-	say 'skipping test, git built without http support'
-	test_done
-fi
-
-LIB_HTTPD_PORT=${LIB_HTTPD_PORT-'5561'}
 . "$TEST_DIRECTORY"/lib-httpd.sh
 start_httpd
 
@@ -36,15 +29,9 @@ POST() {
 	test_cmp exp act
 }
 
-log_div() {
-	echo >>"$HTTPD_ROOT_PATH"/access.log
-	echo "###  $1" >>"$HTTPD_ROOT_PATH"/access.log
-	echo "###" >>"$HTTPD_ROOT_PATH"/access.log
-}
-
 . "$TEST_DIRECTORY"/t556x_common
 
-cat >exp <<EOF
+grep '^[^#]' >exp <<EOF
 
 ###  refs/heads/master
 ###

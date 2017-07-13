@@ -9,24 +9,16 @@ test_description='git apply symlinks and partial files
 
 . ./test-lib.sh
 
-if ! test_have_prereq SYMLINKS
-then
-	say 'Symbolic links not supported, skipping tests.'
-	test_done
-fi
-
 test_expect_success setup '
 
-	ln -s path1/path2/path3/path4/path5 link1 &&
-	git add link? &&
+	test_ln_s_add path1/path2/path3/path4/path5 link1 &&
 	git commit -m initial &&
 
 	git branch side &&
 
 	rm -f link? &&
 
-	ln -s htap6 link1 &&
-	git update-index link? &&
+	test_ln_s_add htap6 link1 &&
 	git commit -m second &&
 
 	git diff-tree -p HEAD^ HEAD >patch  &&
@@ -34,7 +26,7 @@ test_expect_success setup '
 
 '
 
-test_expect_success 'apply symlink patch' '
+test_expect_success SYMLINKS 'apply symlink patch' '
 
 	git checkout side &&
 	git apply patch &&

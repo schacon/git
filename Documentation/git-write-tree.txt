@@ -8,6 +8,7 @@ git-write-tree - Create a tree object from the current index
 
 SYNOPSIS
 --------
+[verse]
 'git write-tree' [--missing-ok] [--prefix=<prefix>/]
 
 DESCRIPTION
@@ -35,15 +36,6 @@ OPTIONS
 	Writes a tree object that represents a subdirectory
 	`<prefix>`.  This can be used to write the tree object
 	for a subproject that is in the named subdirectory.
-
-
-Author
-------
-Written by Linus Torvalds <torvalds@osdl.org>
-
-Documentation
---------------
-Documentation by David Greaves, Junio C Hamano and the git-list <git@vger.kernel.org>.
 
 GIT
 ---

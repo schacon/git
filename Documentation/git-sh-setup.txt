@@ -3,10 +3,11 @@ git-sh-setup(1)
 
 NAME
 ----
-git-sh-setup - Common git shell script setup code
+git-sh-setup - Common Git shell script setup code
 
 SYNOPSIS
 --------
+[verse]
 '. "$(git --exec-path)/git-sh-setup"'
 
 DESCRIPTION
@@ -18,7 +19,7 @@ Porcelain-ish scripts and/or are writing new ones.
 
 The 'git sh-setup' scriptlet is designed to be sourced (using
 `.`) by other shell scripts to set up some variables pointing at
-the normal git directories and a few helper shell functions.
+the normal Git directories and a few helper shell functions.
 
 Before sourcing it, your script should set up a few variables;
 `USAGE` (and `LONG_USAGE`, if any) is used to define message
@@ -40,9 +41,11 @@ usage::
 	die with the usage message.
 
 set_reflog_action::
-	set the message that will be recorded to describe the
-	end-user action in the reflog, when the script updates a
-	ref.
+	Set `GIT_REFLOG_ACTION` environment to a given string (typically
+	the name of the program) unless it is already set.  Whenever
+	the script runs a `git` command that updates refs, a reflog
+	entry is created using the value of this string to leave the
+	record of what command updated the ref.
 
 git_editor::
 	runs an editor of user's choice (GIT_EDITOR, core.editor, VISUAL or
@@ -58,22 +61,34 @@ cd_to_toplevel::
 	runs chdir to the toplevel of the working tree.
 
 require_work_tree::
-	checks if the repository is a bare repository, and dies
-	if so.  Used by scripts that require working tree
-	(e.g. `checkout`).
+	checks if the current directory is within the working tree
+	of the repository, and otherwise dies.
+
+require_work_tree_exists::
+	checks if the working tree associated with the repository
+	exists, and otherwise dies.  Often done before calling
+	cd_to_toplevel, which is impossible to do if there is no
+	working tree.
+
+require_clean_work_tree <action> [<hint>]::
+	checks that the working tree and index associated with the
+	repository have no uncommitted changes to tracked files.
+	Otherwise it emits an error message of the form `Cannot
+	<action>: <reason>. <hint>`, and dies.  Example:
++
+----------------
+require_clean_work_tree rebase "Please commit or stash them."
+----------------
 
 get_author_ident_from_commit::
 	outputs code for use with eval to set the GIT_AUTHOR_NAME,
 	GIT_AUTHOR_EMAIL and GIT_AUTHOR_DATE variables for a given commit.
 
-
-Author
-------
-Written by Linus Torvalds <torvalds@osdl.org>
-
-Documentation
---------------
-Documentation by Junio C Hamano and the git-list <git@vger.kernel.org>.
+create_virtual_base::
+	modifies the first file so only lines in common with the
+	second file remain. If there is insufficient common material,
+	then the first file is left empty. The result is suitable
+	as a virtual base input for a 3-way merge.
 
 GIT
 ---

@@ -7,25 +7,31 @@ test_description='Test export of commits to CVS'
 . ./test-lib.sh
 
 if ! test_have_prereq PERL; then
-	say 'skipping git cvsexportcommit tests, perl not available'
+	skip_all='skipping git cvsexportcommit tests, perl not available'
 	test_done
 fi
 
 cvs >/dev/null 2>&1
 if test $? -ne 1
 then
-    say 'skipping git cvsexportcommit tests, cvs not found'
+    skip_all='skipping git cvsexportcommit tests, cvs not found'
     test_done
 fi
 
-CVSROOT=$(pwd)/cvsroot
-CVSWORK=$(pwd)/cvswork
-GIT_DIR=$(pwd)/.git
+if ! test_have_prereq NOT_ROOT; then
+	skip_all='When cvs is compiled with CVS_BADROOT commits as root fail'
+	test_done
+fi
+
+CVSROOT=$PWD/tmpcvsroot
+CVSWORK=$PWD/cvswork
+GIT_DIR=$PWD/.git
 export CVSROOT CVSWORK GIT_DIR
 
 rm -rf "$CVSROOT" "$CVSWORK"
-mkdir "$CVSROOT" &&
+
 cvs init &&
+test -d "$CVSROOT" &&
 cvs -Q co -d "$CVSWORK" . &&
 echo >empty &&
 git add empty &&
@@ -34,7 +40,7 @@ exit 1
 
 check_entries () {
 	# $1 == directory, $2 == expected
-	grep '^/' "$1/CVS/Entries" | sort | cut -d/ -f2,3,5 >actual
+	sed -ne '/^\//p' "$1/CVS/Entries" | sort | cut -d/ -f2,3,5 >actual
 	if test -z "$2"
 	then
 		>expected
@@ -49,8 +55,8 @@ test_expect_success \
     'mkdir A B C D E F &&
      echo hello1 >A/newfile1.txt &&
      echo hello2 >B/newfile2.txt &&
-     cp "$TEST_DIRECTORY"/test9200a.png C/newfile3.png &&
-     cp "$TEST_DIRECTORY"/test9200a.png D/newfile4.png &&
+     cp "$TEST_DIRECTORY"/test-binary-1.png C/newfile3.png &&
+     cp "$TEST_DIRECTORY"/test-binary-1.png D/newfile4.png &&
      git add A/newfile1.txt &&
      git add B/newfile2.txt &&
      git add C/newfile3.png &&
@@ -63,10 +69,10 @@ test_expect_success \
      check_entries B "newfile2.txt/1.1/" &&
      check_entries C "newfile3.png/1.1/-kb" &&
      check_entries D "newfile4.png/1.1/-kb" &&
-     diff A/newfile1.txt ../A/newfile1.txt &&
-     diff B/newfile2.txt ../B/newfile2.txt &&
-     diff C/newfile3.png ../C/newfile3.png &&
-     diff D/newfile4.png ../D/newfile4.png
+     test_cmp A/newfile1.txt ../A/newfile1.txt &&
+     test_cmp B/newfile2.txt ../B/newfile2.txt &&
+     test_cmp C/newfile3.png ../C/newfile3.png &&
+     test_cmp D/newfile4.png ../D/newfile4.png
      )'
 
 test_expect_success \
@@ -75,8 +81,8 @@ test_expect_success \
      rm -f B/newfile2.txt &&
      rm -f C/newfile3.png &&
      echo Hello5  >E/newfile5.txt &&
-     cp "$TEST_DIRECTORY"/test9200b.png D/newfile4.png &&
-     cp "$TEST_DIRECTORY"/test9200a.png F/newfile6.png &&
+     cp "$TEST_DIRECTORY"/test-binary-2.png D/newfile4.png &&
+     cp "$TEST_DIRECTORY"/test-binary-1.png F/newfile6.png &&
      git add E/newfile5.txt &&
      git add F/newfile6.png &&
      git commit -a -m "Test: Remove, add and update" &&
@@ -89,10 +95,10 @@ test_expect_success \
      check_entries D "newfile4.png/1.2/-kb" &&
      check_entries E "newfile5.txt/1.1/" &&
      check_entries F "newfile6.png/1.1/-kb" &&
-     diff A/newfile1.txt ../A/newfile1.txt &&
-     diff D/newfile4.png ../D/newfile4.png &&
-     diff E/newfile5.txt ../E/newfile5.txt &&
-     diff F/newfile6.png ../F/newfile6.png
+     test_cmp A/newfile1.txt ../A/newfile1.txt &&
+     test_cmp D/newfile4.png ../D/newfile4.png &&
+     test_cmp E/newfile5.txt ../E/newfile5.txt &&
+     test_cmp F/newfile6.png ../F/newfile6.png
      )'
 
 # Should fail (but only on the git cvsexportcommit stage)
@@ -137,9 +143,9 @@ test_expect_success \
      check_entries D "" &&
      check_entries E "newfile5.txt/1.1/" &&
      check_entries F "newfile6.png/1.1/-kb" &&
-     diff A/newfile1.txt ../A/newfile1.txt &&
-     diff E/newfile5.txt ../E/newfile5.txt &&
-     diff F/newfile6.png ../F/newfile6.png
+     test_cmp A/newfile1.txt ../A/newfile1.txt &&
+     test_cmp E/newfile5.txt ../E/newfile5.txt &&
+     test_cmp F/newfile6.png ../F/newfile6.png
      )'
 
 test_expect_success \
@@ -155,8 +161,8 @@ test_expect_success \
      check_entries D "" &&
      check_entries E "newfile5.txt/1.1/" &&
      check_entries F "newfile6.png/1.1/-kb" &&
-     diff E/newfile5.txt ../E/newfile5.txt &&
-     diff F/newfile6.png ../F/newfile6.png
+     test_cmp E/newfile5.txt ../E/newfile5.txt &&
+     test_cmp F/newfile6.png ../F/newfile6.png
      )'
 
 test_expect_success \
@@ -164,7 +170,7 @@ test_expect_success \
      'mkdir "G g" &&
       echo ok then >"G g/with spaces.txt" &&
       git add "G g/with spaces.txt" && \
-      cp "$TEST_DIRECTORY"/test9200a.png "G g/with spaces.png" && \
+      cp "$TEST_DIRECTORY"/test-binary-1.png "G g/with spaces.png" && \
       git add "G g/with spaces.png" &&
       git commit -a -m "With spaces" &&
       id=$(git rev-list --max-count=1 HEAD) &&
@@ -176,7 +182,7 @@ test_expect_success \
 test_expect_success \
      'Update file with spaces in file name' \
      'echo Ok then >>"G g/with spaces.txt" &&
-      cat "$TEST_DIRECTORY"/test9200a.png >>"G g/with spaces.png" && \
+      cat "$TEST_DIRECTORY"/test-binary-1.png >>"G g/with spaces.png" && \
       git add "G g/with spaces.png" &&
       git commit -a -m "Update with spaces" &&
       id=$(git rev-list --max-count=1 HEAD) &&
@@ -196,12 +202,12 @@ if p="Å/goo/a/b/c/d/e/f/g/h/i/j/k/l/m/n/o/p/q/r/s/t/u/v/w/x/y/z/å/ä/ö" &&
 then
 
 # This test contains UTF-8 characters
-test_expect_success \
+test_expect_success !MINGW \
      'File with non-ascii file name' \
      'mkdir -p Å/goo/a/b/c/d/e/f/g/h/i/j/k/l/m/n/o/p/q/r/s/t/u/v/w/x/y/z/å/ä/ö &&
       echo Foo >Å/goo/a/b/c/d/e/f/g/h/i/j/k/l/m/n/o/p/q/r/s/t/u/v/w/x/y/z/å/ä/ö/gårdetsågårdet.txt &&
       git add Å/goo/a/b/c/d/e/f/g/h/i/j/k/l/m/n/o/p/q/r/s/t/u/v/w/x/y/z/å/ä/ö/gårdetsågårdet.txt &&
-      cp "$TEST_DIRECTORY"/test9200a.png Å/goo/a/b/c/d/e/f/g/h/i/j/k/l/m/n/o/p/q/r/s/t/u/v/w/x/y/z/å/ä/ö/gårdetsågårdet.png &&
+      cp "$TEST_DIRECTORY"/test-binary-1.png Å/goo/a/b/c/d/e/f/g/h/i/j/k/l/m/n/o/p/q/r/s/t/u/v/w/x/y/z/å/ä/ö/gårdetsågårdet.png &&
       git add Å/goo/a/b/c/d/e/f/g/h/i/j/k/l/m/n/o/p/q/r/s/t/u/v/w/x/y/z/å/ä/ö/gårdetsågårdet.png &&
       git commit -a -m "Går det så går det" && \
       id=$(git rev-list --max-count=1 HEAD) &&
@@ -228,11 +234,6 @@ test_expect_success \
       (cd "$CVSWORK" &&
       test_must_fail git cvsexportcommit -c $id
       )'
-
-if ! test "$(git config --bool core.filemode)" = false
-then
-	test_set_prereq FILEMODE
-fi
 
 test_expect_success FILEMODE \
      'Retain execute bit' \
@@ -325,7 +326,7 @@ test_expect_success 'use the same checkout for Git and CVS' '
 
 	(mkdir shared &&
 	 cd shared &&
-	 unset GIT_DIR &&
+	 sane_unset GIT_DIR &&
 	 cvs co . &&
 	 git init &&
 	 git add " space" &&

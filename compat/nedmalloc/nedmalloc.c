@@ -159,8 +159,8 @@ struct mallinfo nedmallinfo(void) THROWSPEC			{ return nedpmallinfo(0); }
 #endif
 int    nedmallopt(int parno, int value) THROWSPEC	{ return nedpmallopt(0, parno, value); }
 int    nedmalloc_trim(size_t pad) THROWSPEC			{ return nedpmalloc_trim(0, pad); }
-void   nedmalloc_stats() THROWSPEC					{ nedpmalloc_stats(0); }
-size_t nedmalloc_footprint() THROWSPEC				{ return nedpmalloc_footprint(0); }
+void   nedmalloc_stats(void) THROWSPEC					{ nedpmalloc_stats(0); }
+size_t nedmalloc_footprint(void) THROWSPEC				{ return nedpmalloc_footprint(0); }
 void **nedindependent_calloc(size_t elemsno, size_t elemsize, void **chunks) THROWSPEC	{ return nedpindependent_calloc(0, elemsno, elemsize, chunks); }
 void **nedindependent_comalloc(size_t elems, size_t *sizes, void **chunks) THROWSPEC	{ return nedpindependent_comalloc(0, elems, sizes, chunks); }
 
@@ -603,7 +603,10 @@ static NOINLINE mstate FindMSpace(nedpool *p, threadcache *tc, int *lastUsed, si
 		}
 		/* We really want to make sure this goes into memory now but we
 		have to be careful of breaking aliasing rules, so write it twice */
-		*((volatile struct malloc_state **) &p->m[end])=p->m[end]=temp;
+		{
+			volatile struct malloc_state **_m=(volatile struct malloc_state **) &p->m[end];
+			*_m=(p->m[end]=temp);
+		}
 		ACQUIRE_LOCK(&p->m[end]->mutex);
 		/*printf("Created mspace idx %d\n", end);*/
 		RELEASE_LOCK(&p->mutex);
@@ -935,31 +938,15 @@ void **nedpindependent_comalloc(nedpool *p, size_t elems, size_t *sizes, void **
 	void **ret;
 	threadcache *tc;
 	int mymspace;
-    size_t i, *adjustedsizes=(size_t *) alloca(elems*sizeof(size_t));
-    if(!adjustedsizes) return 0;
-    for(i=0; i<elems; i++)
-	adjustedsizes[i]=sizes[i]<sizeof(threadcacheblk) ? sizeof(threadcacheblk) : sizes[i];
+	size_t i, *adjustedsizes=(size_t *) alloca(elems*sizeof(size_t));
+	if(!adjustedsizes) return 0;
+	for(i=0; i<elems; i++)
+		adjustedsizes[i]=sizes[i]<sizeof(threadcacheblk) ? sizeof(threadcacheblk) : sizes[i];
 	GetThreadCache(&p, &tc, &mymspace, 0);
 	GETMSPACE(m, p, tc, mymspace, 0,
 	      ret=mspace_independent_comalloc(m, elems, adjustedsizes, chunks));
 	return ret;
 }
-
-#ifdef OVERRIDE_STRDUP
-/*
- * This implementation is purely there to override the libc version, to
- * avoid a crash due to allocation and free on different 'heaps'.
- */
-char *strdup(const char *s1)
-{
-	char *s2 = 0;
-	if (s1) {
-		s2 = malloc(strlen(s1) + 1);
-		strcpy(s2, s1);
-	}
-	return s2;
-}
-#endif
 
 #if defined(__cplusplus)
 }

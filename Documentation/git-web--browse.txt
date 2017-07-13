@@ -1,13 +1,14 @@
-git-web--browse(1)
-==================
+git-web{litdd}browse(1)
+=======================
 
 NAME
 ----
-git-web--browse - git helper script to launch a web browser
+git-web--browse - Git helper script to launch a web browser
 
 SYNOPSIS
 --------
-'git web--browse' [OPTIONS] URL/FILE ...
+[verse]
+'git web{litdd}browse' [OPTIONS] URL/FILE ...
 
 DESCRIPTION
 -----------
@@ -20,31 +21,39 @@ The following browsers (or commands) are currently supported:
 
 * firefox (this is the default under X Window when not using KDE)
 * iceweasel
+* seamonkey
+* iceape
+* chromium (also supported as chromium-browser)
+* google-chrome (also supported as chrome)
 * konqueror (this is the default under KDE, see 'Note about konqueror' below)
+* opera
 * w3m (this is the default outside graphical environments)
+* elinks
 * links
 * lynx
 * dillo
 * open (this is the default under Mac OS X GUI)
 * start (this is the default under MinGW)
+* cygstart (this is the default under Cygwin)
+* xdg-open
 
 Custom commands may also be specified.
 
 OPTIONS
 -------
--b BROWSER::
---browser=BROWSER::
-	Use the specified BROWSER. It must be in the list of supported
+-b <browser>::
+--browser=<browser>::
+	Use the specified browser. It must be in the list of supported
 	browsers.
 
--t BROWSER::
---tool=BROWSER::
+-t <browser>::
+--tool=<browser>::
 	Same as above.
 
--c CONF.VAR::
---config=CONF.VAR::
-	CONF.VAR is looked up in the git config files. If it's set,
-	then its value specify the browser that should be used.
+-c <conf.var>::
+--config=<conf.var>::
+	CONF.VAR is looked up in the Git config files. If it's set,
+	then its value specifies the browser that should be used.
 
 CONFIGURATION VARIABLES
 -----------------------
@@ -53,16 +62,16 @@ CONF.VAR (from -c option) and web.browser
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 The web browser can be specified using a configuration variable passed
-with the -c (or --config) command line option, or the 'web.browser'
+with the -c (or --config) command-line option, or the `web.browser`
 configuration variable if the former is not used.
 
 browser.<tool>.path
 ~~~~~~~~~~~~~~~~~~~
 
 You can explicitly provide a full path to your preferred browser by
-setting the configuration variable 'browser.<tool>.path'. For example,
+setting the configuration variable `browser.<tool>.path`. For example,
 you can configure the absolute path to firefox by setting
-'browser.firefox.path'. Otherwise, 'git web--browse' assumes the tool
+'browser.firefox.path'. Otherwise, 'git web{litdd}browse' assumes the tool
 is available in PATH.
 
 browser.<tool>.cmd
@@ -70,15 +79,15 @@ browser.<tool>.cmd
 
 When the browser, specified by options or configuration variables, is
 not among the supported ones, then the corresponding
-'browser.<tool>.cmd' configuration variable will be looked up. If this
-variable exists then 'git web--browse' will treat the specified tool
+`browser.<tool>.cmd` configuration variable will be looked up. If this
+variable exists then 'git web{litdd}browse' will treat the specified tool
 as a custom command and will use a shell eval to run the command with
 the URLs passed as arguments.
 
 Note about konqueror
 --------------------
 
-When 'konqueror' is specified by a command line option or a
+When 'konqueror' is specified by a command-line option or a
 configuration variable, we launch 'kfmclient' to try to open the HTML
 man page on an already opened konqueror in a new tab if possible.
 
@@ -101,7 +110,7 @@ Note about git-config --global
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 Note that these configuration variables should probably be set using
-the '--global' flag, for example like this:
+the `--global` flag, for example like this:
 
 ------------------------------------------------
 $ git config --global web.browser firefox
@@ -109,16 +118,6 @@ $ git config --global web.browser firefox
 
 as they are probably more user specific than repository specific.
 See linkgit:git-config[1] for more information about this.
-
-Author
-------
-Written by Christian Couder <chriscool@tuxfamily.org> and the git-list
-<git@vger.kernel.org>, based on 'git mergetool' by Theodore Y. Ts'o.
-
-Documentation
--------------
-Documentation by Christian Couder <chriscool@tuxfamily.org> and the
-git-list <git@vger.kernel.org>.
 
 GIT
 ---

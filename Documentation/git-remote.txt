@@ -1,25 +1,27 @@
 git-remote(1)
-============
+=============
 
 NAME
 ----
-git-remote - manage set of tracked repositories
+git-remote - Manage set of tracked repositories
 
 
 SYNOPSIS
 --------
 [verse]
 'git remote' [-v | --verbose]
-'git remote add' [-t <branch>] [-m <master>] [-f] [--tags|--no-tags] [--mirror] <name> <url>
+'git remote add' [-t <branch>] [-m <master>] [-f] [--[no-]tags] [--mirror=<fetch|push>] <name> <url>
 'git remote rename' <old> <new>
-'git remote rm' <name>
-'git remote set-head' <name> (-a | -d | <branch>)
+'git remote remove' <name>
+'git remote set-head' <name> (-a | --auto | -d | --delete | <branch>)
+'git remote set-branches' [--add] <name> <branch>...
+'git remote get-url' [--push] [--all] <name>
 'git remote set-url' [--push] <name> <newurl> [<oldurl>]
 'git remote set-url --add' [--push] <name> <newurl>
 'git remote set-url --delete' [--push] <name> <url>
-'git remote' [-v | --verbose] 'show' [-n] <name>
-'git remote prune' [-n | --dry-run] <name>
-'git remote' [-v | --verbose] 'update' [-p | --prune] [group | remote]...
+'git remote' [-v | --verbose] 'show' [-n] <name>...
+'git remote prune' [-n | --dry-run] <name>...
+'git remote' [-v | --verbose] 'update' [-p | --prune] [(<group> | <remote>)...]
 
 DESCRIPTION
 -----------
@@ -57,72 +59,109 @@ remote repository.
 With `--no-tags` option, `git fetch <name>` does not import tags from
 the remote repository.
 +
+By default, only tags on fetched branches are imported
+(see linkgit:git-fetch[1]).
++
 With `-t <branch>` option, instead of the default glob
 refspec for the remote to track all branches under
-`$GIT_DIR/remotes/<name>/`, a refspec to track only `<branch>`
+the `refs/remotes/<name>/` namespace, a refspec to track only `<branch>`
 is created.  You can give more than one `-t <branch>` to track
 multiple branches without grabbing all branches.
 +
-With `-m <master>` option, `$GIT_DIR/remotes/<name>/HEAD` is set
+With `-m <master>` option, a symbolic-ref `refs/remotes/<name>/HEAD` is set
 up to point at remote's `<master>` branch. See also the set-head command.
 +
-In mirror mode, enabled with `\--mirror`, the refs will not be stored
-in the 'refs/remotes/' namespace, but in 'refs/heads/'.  This option
-only makes sense in bare repositories.  If a remote uses mirror
-mode, furthermore, `git push` will always behave as if `\--mirror`
-was passed.
+When a fetch mirror is created with `--mirror=fetch`, the refs will not
+be stored in the 'refs/remotes/' namespace, but rather everything in
+'refs/' on the remote will be directly mirrored into 'refs/' in the
+local repository. This option only makes sense in bare repositories,
+because a fetch would overwrite any local commits.
++
+When a push mirror is created with `--mirror=push`, then `git push`
+will always behave as if `--mirror` was passed.
 
 'rename'::
 
-Rename the remote named <old> to <new>. All remote tracking branches and
+Rename the remote named <old> to <new>. All remote-tracking branches and
 configuration settings for the remote are updated.
 +
 In case <old> and <new> are the same, and <old> is a file under
 `$GIT_DIR/remotes` or `$GIT_DIR/branches`, the remote is converted to
 the configuration file format.
 
+'remove'::
 'rm'::
 
-Remove the remote named <name>. All remote tracking branches and
+Remove the remote named <name>. All remote-tracking branches and
 configuration settings for the remote are removed.
 
 'set-head'::
 
-Sets or deletes the default branch (`$GIT_DIR/remotes/<name>/HEAD`) for
+Sets or deletes the default branch (i.e. the target of the
+symbolic-ref `refs/remotes/<name>/HEAD`) for
 the named remote. Having a default branch for a remote is not required,
 but allows the name of the remote to be specified in lieu of a specific
 branch. For example, if the default branch for `origin` is set to
 `master`, then `origin` may be specified wherever you would normally
 specify `origin/master`.
 +
-With `-d`, `$GIT_DIR/remotes/<name>/HEAD` is deleted.
+With `-d` or `--delete`, the symbolic ref `refs/remotes/<name>/HEAD` is deleted.
 +
-With `-a`, the remote is queried to determine its `HEAD`, then
-`$GIT_DIR/remotes/<name>/HEAD` is set to the same branch. e.g., if the remote
+With `-a` or `--auto`, the remote is queried to determine its `HEAD`, then the
+symbolic-ref `refs/remotes/<name>/HEAD` is set to the same branch. e.g., if the remote
 `HEAD` is pointed at `next`, "`git remote set-head origin -a`" will set
-`$GIT_DIR/refs/remotes/origin/HEAD` to `refs/remotes/origin/next`. This will
+the symbolic-ref `refs/remotes/origin/HEAD` to `refs/remotes/origin/next`. This will
 only work if `refs/remotes/origin/next` already exists; if not it must be
 fetched first.
 +
-Use `<branch>` to set `$GIT_DIR/remotes/<name>/HEAD` explicitly. e.g., "git
-remote set-head origin master" will set `$GIT_DIR/refs/remotes/origin/HEAD` to
+Use `<branch>` to set the symbolic-ref `refs/remotes/<name>/HEAD` explicitly. e.g., "git
+remote set-head origin master" will set the symbolic-ref `refs/remotes/origin/HEAD` to
 `refs/remotes/origin/master`. This will only work if
 `refs/remotes/origin/master` already exists; if not it must be fetched first.
 +
 
+'set-branches'::
+
+Changes the list of branches tracked by the named remote.
+This can be used to track a subset of the available remote branches
+after the initial setup for a remote.
++
+The named branches will be interpreted as if specified with the
+`-t` option on the 'git remote add' command line.
++
+With `--add`, instead of replacing the list of currently tracked
+branches, adds to that list.
+
+'get-url'::
+
+Retrieves the URLs for a remote. Configurations for `insteadOf` and
+`pushInsteadOf` are expanded here. By default, only the first URL is listed.
++
+With `--push`, push URLs are queried rather than fetch URLs.
++
+With `--all`, all URLs for the remote will be listed.
+
 'set-url'::
 
-Changes URL remote points to. Sets first URL remote points to matching
+Changes URLs for the remote. Sets first URL for remote <name> that matches
 regex <oldurl> (first URL if no <oldurl> is given) to <newurl>. If
-<oldurl> doesn't match any URL, error occurs and nothing is changed.
+<oldurl> doesn't match any URL, an error occurs and nothing is changed.
 +
-With '--push', push URLs are manipulated instead of fetch URLs.
+With `--push`, push URLs are manipulated instead of fetch URLs.
 +
-With '--add', instead of changing some URL, new URL is added.
+With `--add`, instead of changing existing URLs, new URL is added.
 +
-With '--delete', instead of changing some URL, all URLs matching
-regex <url> are deleted. Trying to delete all non-push URLs is an
-error.
+With `--delete`, instead of changing existing URLs, all URLs matching
+regex <url> are deleted for remote <name>.  Trying to delete all
+non-push URLs is an error.
++
+Note that the push URL and the fetch URL, even though they can
+be set differently, must still refer to the same place.  What you
+pushed to the push URL should be what you would see if you
+immediately fetched from the fetch URL.  If you are trying to
+fetch from one place (e.g. your upstream) and push to another (e.g.
+your publishing repository), use two separate remotes.
+
 
 'show'::
 
@@ -133,7 +172,7 @@ With `-n` option, the remote heads are not queried first with
 
 'prune'::
 
-Deletes all stale tracking branches under <name>.
+Deletes all stale remote-tracking branches under <name>.
 These stale branches have already been removed from the remote repository
 referenced by <name>, but are still locally available in
 "remotes/<name>".
@@ -169,18 +208,25 @@ Examples
 $ git remote
 origin
 $ git branch -r
-origin/master
-$ git remote add linux-nfs git://linux-nfs.org/pub/linux/nfs-2.6.git
+  origin/HEAD -> origin/master
+  origin/master
+$ git remote add staging git://git.kernel.org/.../gregkh/staging.git
 $ git remote
-linux-nfs
 origin
-$ git fetch
-* refs/remotes/linux-nfs/master: storing branch 'master' ...
-  commit: bf81b46
+staging
+$ git fetch staging
+...
+From git://git.kernel.org/pub/scm/linux/kernel/git/gregkh/staging
+ * [new branch]      master     -> staging/master
+ * [new branch]      staging-linus -> staging/staging-linus
+ * [new branch]      staging-next -> staging/staging-next
 $ git branch -r
-origin/master
-linux-nfs/master
-$ git checkout -b nfs linux-nfs/master
+  origin/HEAD -> origin/master
+  origin/master
+  staging/master
+  staging/staging-linus
+  staging/staging-next
+$ git checkout -b staging staging/master
 ...
 ------------
 
@@ -200,16 +246,6 @@ SEE ALSO
 linkgit:git-fetch[1]
 linkgit:git-branch[1]
 linkgit:git-config[1]
-
-Author
-------
-Written by Junio Hamano
-
-
-Documentation
---------------
-Documentation by J. Bruce Fields and the git-list <git@vger.kernel.org>.
-
 
 GIT
 ---

@@ -95,4 +95,22 @@ test_expect_success 'cherry pick a merge relative to nonexistent parent with --f
 	test_must_fail git cherry-pick --ff -m 3 C
 '
 
+test_expect_success 'cherry pick a root commit with --ff' '
+	git reset --hard first -- &&
+	git rm file1 &&
+	echo first >file2 &&
+	git add file2 &&
+	git commit --amend -m "file2" &&
+	git cherry-pick --ff first &&
+	test "$(git rev-parse --verify HEAD)" = "1df192cd8bc58a2b275d842cede4d221ad9000d1"
+'
+
+test_expect_success 'cherry-pick --ff on unborn branch' '
+	git checkout --orphan unborn &&
+	git rm --cached -r . &&
+	rm -rf * &&
+	git cherry-pick --ff first &&
+	test_cmp_rev first HEAD
+'
+
 test_done

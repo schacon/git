@@ -27,7 +27,7 @@ test_expect_success setup '
 	(
 		cd two && git branch another
 	) &&
-	git clone --mirror two three
+	git clone --mirror two three &&
 	git clone one test
 '
 
@@ -120,7 +120,7 @@ test_expect_success 'git fetch --all (skipFetchAll)' '
 	(cd test4 &&
 	 for b in $(git branch -r)
 	 do
-		git branch -r -d $b || break
+		git branch -r -d $b || exit 1
 	 done &&
 	 git remote add three ../three &&
 	 git config remote.three.skipFetchAll true &&
@@ -144,11 +144,41 @@ test_expect_success 'git fetch --multiple (ignoring skipFetchAll)' '
 	(cd test4 &&
 	 for b in $(git branch -r)
 	 do
-		git branch -r -d $b || break
+		git branch -r -d $b || exit 1
 	 done &&
 	 git fetch --multiple one two three &&
 	 git branch -r > output &&
 	 test_cmp ../expect output)
+'
+
+test_expect_success 'git fetch --all --no-tags' '
+	>expect &&
+	git clone one test5 &&
+	git clone test5 test6 &&
+	(cd test5 && git tag test-tag) &&
+	(
+		cd test6 &&
+		git fetch --all --no-tags &&
+		git tag >output
+	) &&
+	test_cmp expect test6/output
+'
+
+test_expect_success 'git fetch --all --tags' '
+	echo test-tag >expect &&
+	git clone one test7 &&
+	git clone test7 test8 &&
+	(
+		cd test7 &&
+		test_commit test-tag &&
+		git reset --hard HEAD^
+	) &&
+	(
+		cd test8 &&
+		git fetch --all --tags &&
+		git tag >output
+	) &&
+	test_cmp expect test8/output
 '
 
 test_done

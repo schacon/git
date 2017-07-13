@@ -2,7 +2,7 @@
 # Copyright (C) 2006, 2007 Shawn Pearce
 
 proc load_last_commit {} {
-	global HEAD PARENT MERGE_HEAD commit_type ui_comm
+	global HEAD PARENT MERGE_HEAD commit_type ui_comm commit_author
 	global repo_config
 
 	if {[llength $PARENT] == 0} {
@@ -34,6 +34,8 @@ You are currently in the middle of a merge that has not been fully completed.  Y
 					lappend parents [string range $line 7 end]
 				} elseif {[string match {encoding *} $line]} {
 					set enc [string tolower [string range $line 9 end]]
+				} elseif {[regexp "author (.*)\\s<(.*)>\\s(\\d.*$)" $line all name email time]} {
+					set commit_author [list name $name email $email date $time]
 				}
 			}
 			set msg [read $fd]
@@ -106,9 +108,10 @@ proc do_signoff {} {
 }
 
 proc create_new_commit {} {
-	global commit_type ui_comm
+	global commit_type ui_comm commit_author
 
 	set commit_type normal
+	unset -nocomplain commit_author
 	$ui_comm delete 0.0 end
 	$ui_comm edit reset
 	$ui_comm edit modified false
@@ -161,11 +164,12 @@ The rescan will be automatically started now.
 	#
 	set files_ready 0
 	foreach path [array names file_states] {
-		switch -glob -- [lindex $file_states($path) 0] {
+		set s $file_states($path)
+		switch -glob -- [lindex $s 0] {
 		_? {continue}
 		A? -
 		D? -
-		T_ -
+		T? -
 		M? {set files_ready 1}
 		_U -
 		U? {
@@ -259,7 +263,24 @@ proc commit_prehook_wait {fd_ph curHEAD msg_p} {
 }
 
 proc commit_commitmsg {curHEAD msg_p} {
+	global is_detached repo_config
 	global pch_error
+
+	if {$is_detached
+	    && ![file exists [gitdir rebase-merge head-name]]
+	    && 	[is_config_true gui.warndetachedcommit]} {
+		set msg [mc "You are about to commit on a detached head.\
+This is a potentially dangerous thing to do because if you switch\
+to another branch you will lose your changes and it can be difficult\
+to retrieve them later from the reflog. You should probably cancel this\
+commit and create a new branch to continue.\n\
+\n\
+Do you really want to proceed with your Commit?"]
+		if {[ask_popup $msg] ne yes} {
+			unlock_index
+			return
+		}
+	}
 
 	# -- Run the commit-msg hook.
 	#
@@ -304,11 +325,12 @@ proc commit_writetree {curHEAD msg_p} {
 }
 
 proc commit_committree {fd_wt curHEAD msg_p} {
-	global HEAD PARENT MERGE_HEAD commit_type
+	global HEAD PARENT MERGE_HEAD commit_type commit_author
 	global current_branch
 	global ui_comm selected_commit_type
 	global file_states selected_paths rescan_active
 	global repo_config
+	global env
 
 	gets $fd_wt tree_id
 	if {[catch {close $fd_wt} err]} {
@@ -348,9 +370,15 @@ A rescan will be automatically started now.
 		}
 	}
 
+	if {[info exists commit_author]} {
+		set old_author [commit_author_ident $commit_author]
+	}
 	# -- Create the commit.
 	#
 	set cmd [list commit-tree $tree_id]
+	if {[is_config_true commit.gpgsign]} {
+		lappend cmd -S
+	}
 	foreach p [concat $PARENT $MERGE_HEAD] {
 		lappend cmd -p $p
 	}
@@ -360,7 +388,13 @@ A rescan will be automatically started now.
 		error_popup [strcat [mc "commit-tree failed:"] "\n\n$err"]
 		ui_status [mc "Commit failed."]
 		unlock_index
+		unset -nocomplain commit_author
+		commit_author_reset $old_author
 		return
+	}
+	if {[info exists commit_author]} {
+		unset -nocomplain commit_author
+		commit_author_reset $old_author
 	}
 
 	# -- Update the HEAD ref.
@@ -391,6 +425,7 @@ A rescan will be automatically started now.
 	catch {file delete [gitdir MERGE_MSG]}
 	catch {file delete [gitdir SQUASH_MSG]}
 	catch {file delete [gitdir GITGUI_MSG]}
+	catch {file delete [gitdir CHERRY_PICK_HEAD]}
 
 	# -- Let rerere do its thing.
 	#
@@ -452,7 +487,11 @@ A rescan will be automatically started now.
 		}
 		AM -
 		AD -
+		AT -
+		TM -
+		TD -
 		MM -
+		MT -
 		MD {
 			set file_states($path) [list \
 				_[string index $m 1] \
@@ -482,4 +521,21 @@ proc commit_postcommit_wait {fd_ph cmt_id} {
 		return
 	}
 	fconfigure $fd_ph -blocking 0
+}
+
+proc commit_author_ident {details} {
+	global env
+	array set author $details
+	set old [array get env GIT_AUTHOR_*]
+	set env(GIT_AUTHOR_NAME) $author(name)
+	set env(GIT_AUTHOR_EMAIL) $author(email)
+	set env(GIT_AUTHOR_DATE) $author(date)
+	return $old
+}
+proc commit_author_reset {details} {
+	global env
+	unset env(GIT_AUTHOR_NAME) env(GIT_AUTHOR_EMAIL) env(GIT_AUTHOR_DATE)
+	if {$details ne {}} {
+		array set env $details
+	}
 }

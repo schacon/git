@@ -4,7 +4,7 @@ test_description='git archive attribute tests'
 
 . ./test-lib.sh
 
-SUBSTFORMAT=%H%n
+SUBSTFORMAT='%H (%h)%n'
 
 test_expect_exists() {
 	test_expect_success " $1 exists" "test -e $1"
@@ -57,9 +57,18 @@ test_expect_missing	worktree/ignored
 test_expect_exists	worktree/ignored-by-tree
 test_expect_missing	worktree/ignored-by-worktree
 
+test_expect_success 'git archive --worktree-attributes option' '
+	git archive --worktree-attributes --worktree-attributes HEAD >worktree.tar &&
+	(mkdir worktree2 && cd worktree2 && "$TAR" xf -) <worktree.tar
+'
+
+test_expect_missing	worktree2/ignored
+test_expect_exists	worktree2/ignored-by-tree
+test_expect_missing	worktree2/ignored-by-worktree
+
 test_expect_success 'git archive vs. bare' '
 	(cd bare && git archive HEAD) >bare-archive.tar &&
-	test_cmp archive.tar bare-archive.tar
+	test_cmp_bin archive.tar bare-archive.tar
 '
 
 test_expect_success 'git archive with worktree attributes, bare' '
@@ -76,16 +85,6 @@ test_expect_success 'export-subst' '
 	test_cmp nosubstfile archive/nosubstfile &&
 	test_cmp substfile1.expected archive/substfile1 &&
 	test_cmp substfile2 archive/substfile2
-'
-
-test_expect_success 'git tar-tree vs. git archive with worktree attributes' '
-	git tar-tree HEAD >tar-tree.tar &&
-	test_cmp worktree.tar tar-tree.tar
-'
-
-test_expect_success 'git tar-tree vs. git archive with worktree attrs, bare' '
-	(cd bare && git tar-tree HEAD) >bare-tar-tree.tar &&
-	test_cmp bare-worktree.tar bare-tar-tree.tar
 '
 
 test_done

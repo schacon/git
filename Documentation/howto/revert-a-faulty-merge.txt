@@ -7,6 +7,10 @@ Abstract: Sometimes a branch that was already merged to the mainline
  after the offending branch is fixed.
 Message-ID: <7vocz8a6zk.fsf@gitster.siamese.dyndns.org>
 References: <alpine.LFD.2.00.0812181949450.14014@localhost.localdomain>
+Content-type: text/asciidoc
+
+How to revert a faulty merge
+============================
 
 Alan <alan@clueserver.org> said:
 
@@ -26,14 +30,14 @@ The history immediately after the "revert of the merge" would look like
 this:
 
  ---o---o---o---M---x---x---W
-	       /
+               /
        ---A---B
 
 where A and B are on the side development that was not so good, M is the
 merge that brings these premature changes into the mainline, x are changes
 unrelated to what the side branch did and already made on the mainline,
 and W is the "revert of the merge M" (doesn't W look M upside down?).
-IOW, "diff W^..W" is similar to "diff -R M^..M".
+IOW, `"diff W^..W"` is similar to `"diff -R M^..M"`.
 
 Such a "revert" of a merge can be made with:
 
@@ -43,14 +47,14 @@ After the developers of the side branch fix their mistakes, the history
 may look like this:
 
  ---o---o---o---M---x---x---W---x
-	       /
+               /
        ---A---B-------------------C---D
 
 where C and D are to fix what was broken in A and B, and you may already
 have some other changes on the mainline after W.
 
 If you merge the updated side branch (with D at its tip), none of the
-changes made in A nor B will be in the result, because they were reverted
+changes made in A or B will be in the result, because they were reverted
 by W.  That is what Alan saw.
 
 Linus explains the situation:
@@ -77,7 +81,7 @@ In such a situation, you would want to first revert the previous revert,
 which would make the history look like this:
 
  ---o---o---o---M---x---x---W---x---Y
-	       /
+               /
        ---A---B-------------------C---D
 
 where Y is the revert of W.  Such a "revert of the revert" can be done
@@ -86,17 +90,17 @@ with:
     $ git revert W
 
 This history would (ignoring possible conflicts between what W and W..Y
-changed) be equivalent to not having W nor Y at all in the history:
+changed) be equivalent to not having W or Y at all in the history:
 
  ---o---o---o---M---x---x-------x----
-	       /
+               /
        ---A---B-------------------C---D
 
 and merging the side branch again will not have conflict arising from an
 earlier revert and revert of the revert.
 
  ---o---o---o---M---x---x-------x-------*
-	       /                       /
+               /                       /
        ---A---B-------------------C---D
 
 Of course the changes made in C and D still can conflict with what was
@@ -107,25 +111,25 @@ faulty A and B, and redone the changes on top of the updated mainline
 after the revert, the history would have looked like this:
 
  ---o---o---o---M---x---x---W---x---x
-	       /                 \
+               /                 \
        ---A---B                   A'--B'--C'
 
 If you reverted the revert in such a case as in the previous example:
 
  ---o---o---o---M---x---x---W---x---x---Y---*
-	       /                 \         /
+               /                 \         /
        ---A---B                   A'--B'--C'
 
 where Y is the revert of W, A' and B' are rerolled A and B, and there may
-also be a further fix-up C' on the side branch.  "diff Y^..Y" is similar
-to "diff -R W^..W" (which in turn means it is similar to "diff M^..M"),
-and "diff A'^..C'" by definition would be similar but different from that,
+also be a further fix-up C' on the side branch.  `"diff Y^..Y"` is similar
+to `"diff -R W^..W"` (which in turn means it is similar to `"diff M^..M"`),
+and `"diff A'^..C'"` by definition would be similar but different from that,
 because it is a rerolled series of the earlier change.  There will be a
 lot of overlapping changes that result in conflicts.  So do not do "revert
 of revert" blindly without thinking..
 
  ---o---o---o---M---x---x---W---x---x
-	       /                 \
+               /                 \
        ---A---B                   A'--B'--C'
 
 In the history with rebased side branch, W (and M) are behind the merge
@@ -160,7 +164,7 @@ merged. So it's debugging hell, because now you don't have lots of small
 changes that you can try to pinpoint which _part_ of it changes.
 
 But does it all work? Sure it does. You can revert a merge, and from a
-purely technical angle, git did it very naturally and had no real
+purely technical angle, Git did it very naturally and had no real
 troubles. It just considered it a change from "state before merge" to
 "state after merge", and that was it. Nothing complicated, nothing odd,
 nothing really dangerous. Git will do it without even thinking about it.
@@ -229,7 +233,7 @@ reverting W.  Mainline's history would look like this:
    A---B---C
 
 But if you don't actually need to change commit A, then you need some way to
-recreate it as a new commit with the same changes in it.  The rebase commmand's
+recreate it as a new commit with the same changes in it.  The rebase command's
 --no-ff option provides a way to do this:
 
     $ git rebase [-i] --no-ff P

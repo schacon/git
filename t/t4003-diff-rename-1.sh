@@ -11,7 +11,7 @@ test_description='More rename detection
 
 test_expect_success \
     'prepare reference tree' \
-    'cat "$TEST_DIRECTORY"/../COPYING >COPYING &&
+    'cat "$TEST_DIRECTORY"/diff-lib/COPYING >COPYING &&
      echo frotz >rezrov &&
     git update-index --add COPYING rezrov &&
     tree=$(git write-tree) &&
@@ -29,7 +29,7 @@ test_expect_success \
 # copy-and-edit one, and rename-and-edit the other.  We do not say
 # anything about rezrov.
 
-GIT_DIFF_OPTS=--unified=0 git diff-index -M -p $tree >current
+GIT_DIFF_OPTS=--unified=0 git diff-index -C -p $tree >current
 cat >expected <<\EOF
 diff --git a/COPYING b/COPYING.1
 copy from COPYING
@@ -99,7 +99,7 @@ test_expect_success \
 
 test_expect_success \
     'prepare work tree once again' \
-    'cat "$TEST_DIRECTORY"/../COPYING >COPYING &&
+    'cat "$TEST_DIRECTORY"/diff-lib/COPYING >COPYING &&
      git update-index --add --remove COPYING COPYING.1'
 
 # tree has COPYING and rezrov.  work tree has COPYING and COPYING.1,

@@ -1,174 +1,29 @@
-#include "cache.h"
+#include "builtin.h"
+#include "config.h"
 #include "commit.h"
 #include "refs.h"
 #include "pkt-line.h"
 #include "sideband.h"
 #include "run-command.h"
 #include "remote.h"
+#include "connect.h"
 #include "send-pack.h"
 #include "quote.h"
 #include "transport.h"
+#include "version.h"
+#include "sha1-array.h"
+#include "gpg-interface.h"
+#include "gettext.h"
 
-static const char send_pack_usage[] =
-"git send-pack [--all | --mirror] [--dry-run] [--force] [--receive-pack=<git-receive-pack>] [--verbose] [--thin] [<host>:]<directory> [<ref>...]\n"
-"  --all and explicit <ref> specification are mutually exclusive.";
+static const char * const send_pack_usage[] = {
+	N_("git send-pack [--all | --mirror] [--dry-run] [--force] "
+	  "[--receive-pack=<git-receive-pack>] [--verbose] [--thin] [--atomic] "
+	  "[<host>:]<directory> [<ref>...]\n"
+	  "  --all and explicit <ref> specification are mutually exclusive."),
+	NULL,
+};
 
 static struct send_pack_args args;
-
-static int feed_object(const unsigned char *sha1, int fd, int negative)
-{
-	char buf[42];
-
-	if (negative && !has_sha1_file(sha1))
-		return 1;
-
-	memcpy(buf + negative, sha1_to_hex(sha1), 40);
-	if (negative)
-		buf[0] = '^';
-	buf[40 + negative] = '\n';
-	return write_or_whine(fd, buf, 41 + negative, "send-pack: send refs");
-}
-
-/*
- * Make a pack stream and spit it out into file descriptor fd
- */
-static int pack_objects(int fd, struct ref *refs, struct extra_have_objects *extra, struct send_pack_args *args)
-{
-	/*
-	 * The child becomes pack-objects --revs; we feed
-	 * the revision parameters to it via its stdin and
-	 * let its stdout go back to the other end.
-	 */
-	const char *argv[] = {
-		"pack-objects",
-		"--all-progress-implied",
-		"--revs",
-		"--stdout",
-		NULL,
-		NULL,
-		NULL,
-		NULL,
-	};
-	struct child_process po;
-	int i;
-
-	i = 4;
-	if (args->use_thin_pack)
-		argv[i++] = "--thin";
-	if (args->use_ofs_delta)
-		argv[i++] = "--delta-base-offset";
-	if (args->quiet)
-		argv[i++] = "-q";
-	memset(&po, 0, sizeof(po));
-	po.argv = argv;
-	po.in = -1;
-	po.out = args->stateless_rpc ? -1 : fd;
-	po.git_cmd = 1;
-	if (start_command(&po))
-		die_errno("git pack-objects failed");
-
-	/*
-	 * We feed the pack-objects we just spawned with revision
-	 * parameters by writing to the pipe.
-	 */
-	for (i = 0; i < extra->nr; i++)
-		if (!feed_object(extra->array[i], po.in, 1))
-			break;
-
-	while (refs) {
-		if (!is_null_sha1(refs->old_sha1) &&
-		    !feed_object(refs->old_sha1, po.in, 1))
-			break;
-		if (!is_null_sha1(refs->new_sha1) &&
-		    !feed_object(refs->new_sha1, po.in, 0))
-			break;
-		refs = refs->next;
-	}
-
-	close(po.in);
-
-	if (args->stateless_rpc) {
-		char *buf = xmalloc(LARGE_PACKET_MAX);
-		while (1) {
-			ssize_t n = xread(po.out, buf, LARGE_PACKET_MAX);
-			if (n <= 0)
-				break;
-			send_sideband(fd, -1, buf, n, LARGE_PACKET_MAX);
-		}
-		free(buf);
-		close(po.out);
-		po.out = -1;
-	}
-
-	if (finish_command(&po))
-		return error("pack-objects died with strange error");
-	return 0;
-}
-
-static int receive_status(int in, struct ref *refs)
-{
-	struct ref *hint;
-	char line[1000];
-	int ret = 0;
-	int len = packet_read_line(in, line, sizeof(line));
-	if (len < 10 || memcmp(line, "unpack ", 7))
-		return error("did not receive remote status");
-	if (memcmp(line, "unpack ok\n", 10)) {
-		char *p = line + strlen(line) - 1;
-		if (*p == '\n')
-			*p = '\0';
-		error("unpack failed: %s", line + 7);
-		ret = -1;
-	}
-	hint = NULL;
-	while (1) {
-		char *refname;
-		char *msg;
-		len = packet_read_line(in, line, sizeof(line));
-		if (!len)
-			break;
-		if (len < 3 ||
-		    (memcmp(line, "ok ", 3) && memcmp(line, "ng ", 3))) {
-			fprintf(stderr, "protocol error: %s\n", line);
-			ret = -1;
-			break;
-		}
-
-		line[strlen(line)-1] = '\0';
-		refname = line + 3;
-		msg = strchr(refname, ' ');
-		if (msg)
-			*msg++ = '\0';
-
-		/* first try searching at our hint, falling back to all refs */
-		if (hint)
-			hint = find_ref_by_name(hint, refname);
-		if (!hint)
-			hint = find_ref_by_name(refs, refname);
-		if (!hint) {
-			warning("remote reported status on unknown ref: %s",
-					refname);
-			continue;
-		}
-		if (hint->status != REF_STATUS_EXPECTING_REPORT) {
-			warning("remote reported status on unexpected ref: %s",
-					refname);
-			continue;
-		}
-
-		if (line[0] == 'o' && line[1] == 'k')
-			hint->status = REF_STATUS_OK;
-		else {
-			hint->status = REF_STATUS_REMOTE_REJECT;
-			ret = -1;
-		}
-		if (msg)
-			hint->remote_status = xstrdup(msg);
-		/* start our next search from the next ref */
-		hint = hint->next;
-	}
-	return ret;
-}
 
 static void print_helper_status(struct ref *ref)
 {
@@ -198,6 +53,26 @@ static void print_helper_status(struct ref *ref)
 			msg = "non-fast forward";
 			break;
 
+		case REF_STATUS_REJECT_FETCH_FIRST:
+			res = "error";
+			msg = "fetch first";
+			break;
+
+		case REF_STATUS_REJECT_NEEDS_FORCE:
+			res = "error";
+			msg = "needs force";
+			break;
+
+		case REF_STATUS_REJECT_STALE:
+			res = "error";
+			msg = "stale info";
+			break;
+
+		case REF_STATUS_REJECT_ALREADY_EXISTS:
+			res = "error";
+			msg = "already exists";
+			break;
+
 		case REF_STATUS_REJECT_NODELETE:
 		case REF_STATUS_REMOTE_REJECT:
 			res = "error";
@@ -218,161 +93,31 @@ static void print_helper_status(struct ref *ref)
 		}
 		strbuf_addch(&buf, '\n');
 
-		safe_write(1, buf.buf, buf.len);
+		write_or_die(1, buf.buf, buf.len);
 	}
 	strbuf_release(&buf);
 }
 
-static int sideband_demux(int in, int out, void *data)
+static int send_pack_config(const char *k, const char *v, void *cb)
 {
-	int *fd = data;
-	int ret = recv_sideband("send-pack", fd[0], out);
-	close(out);
-	return ret;
-}
+	git_gpg_config(k, v, NULL);
 
-int send_pack(struct send_pack_args *args,
-	      int fd[], struct child_process *conn,
-	      struct ref *remote_refs,
-	      struct extra_have_objects *extra_have)
-{
-	int in = fd[0];
-	int out = fd[1];
-	struct strbuf req_buf = STRBUF_INIT;
-	struct ref *ref;
-	int new_refs;
-	int allow_deleting_refs = 0;
-	int status_report = 0;
-	int use_sideband = 0;
-	unsigned cmds_sent = 0;
-	int ret;
-	struct async demux;
-
-	/* Does the other end support the reporting? */
-	if (server_supports("report-status"))
-		status_report = 1;
-	if (server_supports("delete-refs"))
-		allow_deleting_refs = 1;
-	if (server_supports("ofs-delta"))
-		args->use_ofs_delta = 1;
-	if (server_supports("side-band-64k"))
-		use_sideband = 1;
-
-	if (!remote_refs) {
-		fprintf(stderr, "No refs in common and none specified; doing nothing.\n"
-			"Perhaps you should specify a branch such as 'master'.\n");
-		return 0;
-	}
-
-	/*
-	 * Finally, tell the other end!
-	 */
-	new_refs = 0;
-	for (ref = remote_refs; ref; ref = ref->next) {
-		if (!ref->peer_ref && !args->send_mirror)
-			continue;
-
-		/* Check for statuses set by set_ref_status_for_push() */
-		switch (ref->status) {
-		case REF_STATUS_REJECT_NONFASTFORWARD:
-		case REF_STATUS_UPTODATE:
-			continue;
-		default:
-			; /* do nothing */
-		}
-
-		if (ref->deletion && !allow_deleting_refs) {
-			ref->status = REF_STATUS_REJECT_NODELETE;
-			continue;
-		}
-
-		if (!ref->deletion)
-			new_refs++;
-
-		if (args->dry_run) {
-			ref->status = REF_STATUS_OK;
-		} else {
-			char *old_hex = sha1_to_hex(ref->old_sha1);
-			char *new_hex = sha1_to_hex(ref->new_sha1);
-
-			if (!cmds_sent && (status_report || use_sideband)) {
-				packet_buf_write(&req_buf, "%s %s %s%c%s%s",
-					old_hex, new_hex, ref->name, 0,
-					status_report ? " report-status" : "",
-					use_sideband ? " side-band-64k" : "");
+	if (!strcmp(k, "push.gpgsign")) {
+		const char *value;
+		if (!git_config_get_value("push.gpgsign", &value)) {
+			switch (git_config_maybe_bool("push.gpgsign", value)) {
+			case 0:
+				args.push_cert = SEND_PACK_PUSH_CERT_NEVER;
+				break;
+			case 1:
+				args.push_cert = SEND_PACK_PUSH_CERT_ALWAYS;
+				break;
+			default:
+				if (value && !strcasecmp(value, "if-asked"))
+					args.push_cert = SEND_PACK_PUSH_CERT_IF_ASKED;
+				else
+					return error("Invalid value for '%s'", k);
 			}
-			else
-				packet_buf_write(&req_buf, "%s %s %s",
-					old_hex, new_hex, ref->name);
-			ref->status = status_report ?
-				REF_STATUS_EXPECTING_REPORT :
-				REF_STATUS_OK;
-			cmds_sent++;
-		}
-	}
-
-	if (args->stateless_rpc) {
-		if (!args->dry_run && cmds_sent) {
-			packet_buf_flush(&req_buf);
-			send_sideband(out, -1, req_buf.buf, req_buf.len, LARGE_PACKET_MAX);
-		}
-	} else {
-		safe_write(out, req_buf.buf, req_buf.len);
-		packet_flush(out);
-	}
-	strbuf_release(&req_buf);
-
-	if (use_sideband && cmds_sent) {
-		memset(&demux, 0, sizeof(demux));
-		demux.proc = sideband_demux;
-		demux.data = fd;
-		demux.out = -1;
-		if (start_async(&demux))
-			die("receive-pack: unable to fork off sideband demultiplexer");
-		in = demux.out;
-	}
-
-	if (new_refs && cmds_sent) {
-		if (pack_objects(out, remote_refs, extra_have, args) < 0) {
-			for (ref = remote_refs; ref; ref = ref->next)
-				ref->status = REF_STATUS_NONE;
-			if (use_sideband)
-				finish_async(&demux);
-			return -1;
-		}
-	}
-	if (args->stateless_rpc && cmds_sent)
-		packet_flush(out);
-
-	if (status_report && cmds_sent)
-		ret = receive_status(in, remote_refs);
-	else
-		ret = 0;
-	if (args->stateless_rpc)
-		packet_flush(out);
-
-	if (use_sideband && cmds_sent) {
-		if (finish_async(&demux)) {
-			error("error in sideband demultiplexer");
-			ret = -1;
-		}
-		close(demux.out);
-	}
-
-	if (ret < 0)
-		return ret;
-
-	if (args->porcelain)
-		return 0;
-
-	for (ref = remote_refs; ref; ref = ref->next) {
-		switch (ref->status) {
-		case REF_STATUS_NONE:
-		case REF_STATUS_UPTODATE:
-		case REF_STATUS_OK:
-			break;
-		default:
-			return -1;
 		}
 	}
 	return 0;
@@ -387,83 +132,108 @@ int cmd_send_pack(int argc, const char **argv, const char *prefix)
 	const char *dest = NULL;
 	int fd[2];
 	struct child_process *conn;
-	struct extra_have_objects extra_have;
+	struct oid_array extra_have = OID_ARRAY_INIT;
+	struct oid_array shallow = OID_ARRAY_INIT;
 	struct ref *remote_refs, *local_refs;
 	int ret;
 	int helper_status = 0;
 	int send_all = 0;
+	int verbose = 0;
 	const char *receivepack = "git-receive-pack";
+	unsigned dry_run = 0;
+	unsigned send_mirror = 0;
+	unsigned force_update = 0;
+	unsigned quiet = 0;
+	int push_cert = 0;
+	struct string_list push_options = STRING_LIST_INIT_NODUP;
+	unsigned use_thin_pack = 0;
+	unsigned atomic = 0;
+	unsigned stateless_rpc = 0;
 	int flags;
-	int nonfastforward = 0;
+	unsigned int reject_reasons;
+	int progress = -1;
+	int from_stdin = 0;
+	struct push_cas_option cas = {0};
 
-	argv++;
-	for (i = 1; i < argc; i++, argv++) {
-		const char *arg = *argv;
+	struct option options[] = {
+		OPT__VERBOSITY(&verbose),
+		OPT_STRING(0, "receive-pack", &receivepack, "receive-pack", N_("receive pack program")),
+		OPT_STRING(0, "exec", &receivepack, "receive-pack", N_("receive pack program")),
+		OPT_STRING(0, "remote", &remote_name, "remote", N_("remote name")),
+		OPT_BOOL(0, "all", &send_all, N_("push all refs")),
+		OPT_BOOL('n' , "dry-run", &dry_run, N_("dry run")),
+		OPT_BOOL(0, "mirror", &send_mirror, N_("mirror all refs")),
+		OPT_BOOL('f', "force", &force_update, N_("force updates")),
+		{ OPTION_CALLBACK,
+		  0, "signed", &push_cert, "yes|no|if-asked", N_("GPG sign the push"),
+		  PARSE_OPT_OPTARG, option_parse_push_signed },
+		OPT_STRING_LIST(0, "push-option", &push_options,
+				N_("server-specific"),
+				N_("option to transmit")),
+		OPT_BOOL(0, "progress", &progress, N_("force progress reporting")),
+		OPT_BOOL(0, "thin", &use_thin_pack, N_("use thin pack")),
+		OPT_BOOL(0, "atomic", &atomic, N_("request atomic transaction on remote side")),
+		OPT_BOOL(0, "stateless-rpc", &stateless_rpc, N_("use stateless RPC protocol")),
+		OPT_BOOL(0, "stdin", &from_stdin, N_("read refs from stdin")),
+		OPT_BOOL(0, "helper-status", &helper_status, N_("print status from remote helper")),
+		{ OPTION_CALLBACK,
+		  0, CAS_OPT_NAME, &cas, N_("refname>:<expect"),
+		  N_("require old value of ref to be at this value"),
+		  PARSE_OPT_OPTARG, parseopt_push_cas_option },
+		OPT_END()
+	};
 
-		if (*arg == '-') {
-			if (!prefixcmp(arg, "--receive-pack=")) {
-				receivepack = arg + 15;
-				continue;
-			}
-			if (!prefixcmp(arg, "--exec=")) {
-				receivepack = arg + 7;
-				continue;
-			}
-			if (!prefixcmp(arg, "--remote=")) {
-				remote_name = arg + 9;
-				continue;
-			}
-			if (!strcmp(arg, "--all")) {
-				send_all = 1;
-				continue;
-			}
-			if (!strcmp(arg, "--dry-run")) {
-				args.dry_run = 1;
-				continue;
-			}
-			if (!strcmp(arg, "--mirror")) {
-				args.send_mirror = 1;
-				continue;
-			}
-			if (!strcmp(arg, "--force")) {
-				args.force_update = 1;
-				continue;
-			}
-			if (!strcmp(arg, "--verbose")) {
-				args.verbose = 1;
-				continue;
-			}
-			if (!strcmp(arg, "--thin")) {
-				args.use_thin_pack = 1;
-				continue;
-			}
-			if (!strcmp(arg, "--stateless-rpc")) {
-				args.stateless_rpc = 1;
-				continue;
-			}
-			if (!strcmp(arg, "--helper-status")) {
-				helper_status = 1;
-				continue;
-			}
-			usage(send_pack_usage);
-		}
-		if (!dest) {
-			dest = arg;
-			continue;
-		}
-		refspecs = (const char **) argv;
-		nr_refspecs = argc - i;
-		break;
+	git_config(send_pack_config, NULL);
+	argc = parse_options(argc, argv, prefix, options, send_pack_usage, 0);
+	if (argc > 0) {
+		dest = argv[0];
+		refspecs = (const char **)(argv + 1);
+		nr_refspecs = argc - 1;
 	}
+
 	if (!dest)
-		usage(send_pack_usage);
+		usage_with_options(send_pack_usage, options);
+
+	args.verbose = verbose;
+	args.dry_run = dry_run;
+	args.send_mirror = send_mirror;
+	args.force_update = force_update;
+	args.quiet = quiet;
+	args.push_cert = push_cert;
+	args.progress = progress;
+	args.use_thin_pack = use_thin_pack;
+	args.atomic = atomic;
+	args.stateless_rpc = stateless_rpc;
+	args.push_options = push_options.nr ? &push_options : NULL;
+
+	if (from_stdin) {
+		struct argv_array all_refspecs = ARGV_ARRAY_INIT;
+
+		for (i = 0; i < nr_refspecs; i++)
+			argv_array_push(&all_refspecs, refspecs[i]);
+
+		if (args.stateless_rpc) {
+			const char *buf;
+			while ((buf = packet_read_line(0, NULL)))
+				argv_array_push(&all_refspecs, buf);
+		} else {
+			struct strbuf line = STRBUF_INIT;
+			while (strbuf_getline(&line, stdin) != EOF)
+				argv_array_push(&all_refspecs, line.buf);
+			strbuf_release(&line);
+		}
+
+		refspecs = all_refspecs.argv;
+		nr_refspecs = all_refspecs.argc;
+	}
+
 	/*
 	 * --all and --mirror are incompatible; neither makes sense
 	 * with any refspecs.
 	 */
-	if ((refspecs && (send_all || args.send_mirror)) ||
+	if ((nr_refspecs > 0 && (send_all || args.send_mirror)) ||
 	    (send_all && args.send_mirror))
-		usage(send_pack_usage);
+		usage_with_options(send_pack_usage, options);
 
 	if (remote_name) {
 		remote = remote_get(remote_name);
@@ -472,6 +242,10 @@ int cmd_send_pack(int argc, const char **argv, const char *prefix)
 			    dest, remote_name);
 		}
 	}
+
+	if (progress == -1)
+		progress = !args.quiet && isatty(2);
+	args.progress = progress;
 
 	if (args.stateless_rpc) {
 		conn = NULL;
@@ -482,10 +256,8 @@ int cmd_send_pack(int argc, const char **argv, const char *prefix)
 			args.verbose ? CONNECT_VERBOSE : 0);
 	}
 
-	memset(&extra_have, 0, sizeof(extra_have));
-
-	get_remote_heads(fd[0], &remote_refs, 0, NULL, REF_NORMAL,
-			 &extra_have);
+	get_remote_heads(fd[0], NULL, 0, &remote_refs, REF_NORMAL,
+			 &extra_have, &shallow);
 
 	transport_verify_remote_names(nr_refspecs, refspecs);
 
@@ -499,8 +271,11 @@ int cmd_send_pack(int argc, const char **argv, const char *prefix)
 		flags |= MATCH_REFS_MIRROR;
 
 	/* match them up */
-	if (match_refs(local_refs, &remote_refs, nr_refspecs, refspecs, flags))
+	if (match_push_refs(local_refs, &remote_refs, nr_refspecs, refspecs, flags))
 		return -1;
+
+	if (!is_empty_cas(&cas))
+		apply_push_cas(&cas, remote, remote_refs);
 
 	set_ref_status_for_push(remote_refs, args.send_mirror,
 		args.force_update);
@@ -516,7 +291,7 @@ int cmd_send_pack(int argc, const char **argv, const char *prefix)
 	ret |= finish_connect(conn);
 
 	if (!helper_status)
-		transport_print_push_status(dest, remote_refs, args.verbose, 0, &nonfastforward);
+		transport_print_push_status(dest, remote_refs, args.verbose, 0, &reject_reasons);
 
 	if (!args.dry_run && remote) {
 		struct ref *ref;

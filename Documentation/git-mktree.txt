@@ -8,6 +8,7 @@ git-mktree - Build a tree-object from ls-tree formatted text
 
 SYNOPSIS
 --------
+[verse]
 'git mktree' [-z] [--missing] [--batch]
 
 DESCRIPTION
@@ -31,16 +32,8 @@ OPTIONS
 --batch::
 	Allow building of more than one tree object before exiting.  Each
 	tree is separated by as single blank line. The final new-line is
-	optional.  Note - if the '-z' option is used, lines are terminated
+	optional.  Note - if the `-z` option is used, lines are terminated
 	with NUL.
-
-Author
-------
-Written by Junio C Hamano <gitster@pobox.com>
-
-Documentation
---------------
-Documentation by Junio C Hamano and the git-list <git@vger.kernel.org>.
 
 GIT
 ---

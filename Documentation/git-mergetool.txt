@@ -7,7 +7,8 @@ git-mergetool - Run merge conflict resolution tools to resolve merge conflicts
 
 SYNOPSIS
 --------
-'git mergetool' [--tool=<tool>] [-y|--no-prompt|--prompt] [<file>]...
+[verse]
+'git mergetool' [--tool=<tool>] [-y | --[no-]prompt] [<file>...]
 
 DESCRIPTION
 -----------
@@ -16,18 +17,19 @@ Use `git mergetool` to run one of several merge utilities to resolve
 merge conflicts.  It is typically run after 'git merge'.
 
 If one or more <file> parameters are given, the merge tool program will
-be run to resolve differences on each file.  If no <file> names are
-specified, 'git mergetool' will run the merge tool program on every file
-with merge conflicts.
+be run to resolve differences on each file (skipping those without
+conflicts).  Specifying a directory will include all unresolved files in
+that path.  If no <file> names are specified, 'git mergetool' will run
+the merge tool program on every file with merge conflicts.
 
 OPTIONS
 -------
 -t <tool>::
 --tool=<tool>::
 	Use the merge resolution program specified by <tool>.
-	Valid merge tools are:
-	kdiff3, tkdiff, meld, xxdiff, emerge, vimdiff, gvimdiff, ecmerge,
-	diffuse, tortoisemerge, opendiff, p4merge and araxis.
+	Valid values include emerge, gvimdiff, kdiff3,
+	meld, vimdiff, and tortoisemerge. Run `git mergetool --tool-help`
+	for the list of valid <tool> settings.
 +
 If a merge resolution program is not specified, 'git mergetool'
 will use the configuration variable `merge.tool`.  If the
@@ -62,23 +64,37 @@ variable `mergetool.<tool>.trustExitCode` can be set to `true`.
 Otherwise, 'git mergetool' will prompt the user to indicate the
 success of the resolution after the custom tool has exited.
 
+--tool-help::
+	Print a list of merge tools that may be used with `--tool`.
+
 -y::
 --no-prompt::
 	Don't prompt before each invocation of the merge resolution
 	program.
+	This is the default if the merge resolution program is
+	explicitly specified with the `--tool` option or with the
+	`merge.tool` configuration variable.
 
 --prompt::
-	Prompt before each invocation of the merge resolution program.
-	This is the default behaviour; the option is provided to
-	override any configuration settings.
+	Prompt before each invocation of the merge resolution program
+	to give the user a chance to skip the path.
 
-Author
-------
-Written by Theodore Y Ts'o <tytso@mit.edu>
+-O<orderfile>::
+	Process files in the order specified in the
+	<orderfile>, which has one shell glob pattern per line.
+	This overrides the `diff.orderFile` configuration variable
+	(see linkgit:git-config[1]).  To cancel `diff.orderFile`,
+	use `-O/dev/null`.
 
-Documentation
---------------
-Documentation by Theodore Y Ts'o.
+TEMPORARY FILES
+---------------
+`git mergetool` creates `*.orig` backup files while resolving merges.
+These are safe to remove once a file has been merged and its
+`git mergetool` session has completed.
+
+Setting the `mergetool.keepBackup` configuration variable to `false`
+causes `git mergetool` to automatically remove the backup as files
+are successfully merged.
 
 GIT
 ---

@@ -35,7 +35,7 @@ test_expect_success 'setup' '
 		tr 1234 "\370\235\204\236")" a1 &&
 
 	echo 5 >a1 &&
-	git commit --quiet -m "a								12	34	56	78" a1
+	git commit --quiet -m "a								12	34	56	78" a1 &&
 
 	echo 6 >a1 &&
 	git commit --quiet -m "Commit by someone else" \
@@ -93,7 +93,7 @@ test_expect_success 'output from user-defined format is re-wrapped' '
 	test_cmp expect log.predictable
 '
 
-test_expect_success 'shortlog wrapping' '
+test_expect_success !MINGW 'shortlog wrapping' '
 	cat >expect <<\EOF &&
 A U Thor (5):
       Test
@@ -114,9 +114,39 @@ EOF
 	test_cmp expect out
 '
 
-test_expect_success 'shortlog from non-git directory' '
-	git log HEAD >log &&
+test_expect_success !MINGW 'shortlog from non-git directory' '
+	git log --no-expand-tabs HEAD >log &&
 	GIT_DIR=non-existing git shortlog -w <log >out &&
+	test_cmp expect out
+'
+
+test_expect_success !MINGW 'shortlog can read --format=raw output' '
+	git log --format=raw HEAD >log &&
+	GIT_DIR=non-existing git shortlog -w <log >out &&
+	test_cmp expect out
+'
+
+test_expect_success 'shortlog should add newline when input line matches wraplen' '
+	cat >expect <<\EOF &&
+A U Thor (2):
+      bbbbbbbbbbbbbbbbbb: bbbbbbbb bbb bbbb bbbbbbb bb bbbb bbb bbbbb bbbbbb
+      aaaaaaaaaaaaaaaaaaaaaa: aaaaaa aaaaaaaaaa aaaa aaaaaaaa aa aaaa aa aaa
+
+EOF
+	git shortlog -w >out <<\EOF &&
+commit 0000000000000000000000000000000000000001
+Author: A U Thor <author@example.com>
+Date:   Thu Apr 7 15:14:13 2005 -0700
+
+    aaaaaaaaaaaaaaaaaaaaaa: aaaaaa aaaaaaaaaa aaaa aaaaaaaa aa aaaa aa aaa
+
+commit 0000000000000000000000000000000000000002
+Author: A U Thor <author@example.com>
+Date:   Thu Apr 7 15:14:13 2005 -0700
+
+    bbbbbbbbbbbbbbbbbb: bbbbbbbb bbb bbbb bbbbbbb bb bbbb bbb bbbbb bbbbbb
+
+EOF
 	test_cmp expect out
 '
 
@@ -135,7 +165,7 @@ $DSCHO (2):
 
 EOF
 
-test_expect_success 'shortlog encoding' '
+test_expect_success !MINGW 'shortlog encoding' '
 	git reset --hard "$commit" &&
 	git config --unset i18n.commitencoding &&
 	echo 2 > a1 &&
@@ -147,5 +177,36 @@ test_expect_success 'shortlog encoding' '
 	git config --unset i18n.commitencoding &&
 	git shortlog HEAD~2.. > out &&
 test_cmp expect out'
+
+test_expect_success 'shortlog with revision pseudo options' '
+	git shortlog --all &&
+	git shortlog --branches &&
+	git shortlog --exclude=refs/heads/m* --all
+'
+
+test_expect_success 'shortlog with --output=<file>' '
+	git shortlog --output=shortlog -1 master >output &&
+	test ! -s output &&
+	test_line_count = 3 shortlog
+'
+
+test_expect_success 'shortlog --committer (internal)' '
+	git checkout --orphan side &&
+	git commit --allow-empty -m one &&
+	git commit --allow-empty -m two &&
+	GIT_COMMITTER_NAME="Sin Nombre" git commit --allow-empty -m three &&
+
+	cat >expect <<-\EOF &&
+	     2	C O Mitter
+	     1	Sin Nombre
+	EOF
+	git shortlog -nsc HEAD >actual &&
+	test_cmp expect actual
+'
+
+test_expect_success 'shortlog --committer (external)' '
+	git log --format=full | git shortlog -nsc >actual &&
+	test_cmp expect actual
+'
 
 test_done

@@ -9,12 +9,6 @@ test_description='git apply should not get confused with type changes.
 
 . ./test-lib.sh
 
-if ! test_have_prereq SYMLINKS
-then
-	say 'Symbolic links not supported, skipping tests.'
-	test_done
-fi
-
 test_expect_success 'setup repository and commits' '
 	echo "hello world" > foo &&
 	echo "hi planet" > bar &&
@@ -22,13 +16,12 @@ test_expect_success 'setup repository and commits' '
 	git commit -m initial &&
 	git branch initial &&
 	rm -f foo &&
-	ln -s bar foo &&
-	git update-index foo &&
+	test_ln_s_add bar foo &&
 	git commit -m "foo symlinked to bar" &&
 	git branch foo-symlinked-to-bar &&
-	rm -f foo &&
+	git rm -f foo &&
 	echo "how far is the sun?" > foo &&
-	git update-index foo &&
+	git update-index --add foo &&
 	git commit -m "foo back to file" &&
 	git branch foo-back-to-file &&
 	printf "\0" > foo &&

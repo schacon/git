@@ -1,6 +1,8 @@
-#!/usr/bin/perl -w
+#!/usr/bin/perl
 
+use 5.008;
 use strict;
+use warnings;
 use Getopt::Std;
 use File::Temp qw(tempdir);
 use Data::Dumper;
@@ -28,6 +30,13 @@ if ($opt_w || $opt_W) {
 		chomp($gd);
 		$ENV{GIT_DIR} = $gd;
 	}
+
+	# On MSYS, convert a Windows-style path to an MSYS-style path
+	# so that rel2abs() below works correctly.
+	if ($^O eq 'msys') {
+		$ENV{GIT_DIR} =~ s#^([[:alpha:]]):/#/$1/#;
+	}
+
 	# Make sure GIT_DIR is absolute
 	$ENV{GIT_DIR} = File::Spec->rel2abs($ENV{GIT_DIR});
 }
@@ -411,7 +420,7 @@ sleep(1);
 
 sub usage {
 	print STDERR <<END;
-Usage: GIT_DIR=/path/to/.git git cvsexportcommit [-h] [-p] [-v] [-c] [-f] [-u] [-k] [-w cvsworkdir] [-m msgprefix] [ parent ] commit
+usage: GIT_DIR=/path/to/.git git cvsexportcommit [-h] [-p] [-v] [-c] [-f] [-u] [-k] [-w cvsworkdir] [-m msgprefix] [ parent ] commit
 END
 	exit(1);
 }

@@ -10,28 +10,21 @@ static int order_cnt;
 
 static void prepare_order(const char *orderfile)
 {
-	int fd, cnt, pass;
+	int cnt, pass;
+	struct strbuf sb = STRBUF_INIT;
 	void *map;
 	char *cp, *endp;
-	struct stat st;
-	size_t sz;
+	ssize_t sz;
 
 	if (order)
 		return;
 
-	fd = open(orderfile, O_RDONLY);
-	if (fd < 0)
-		return;
-	if (fstat(fd, &st)) {
-		close(fd);
-		return;
-	}
-	sz = xsize_t(st.st_size);
-	map = mmap(NULL, sz, PROT_READ|PROT_WRITE, MAP_PRIVATE, fd, 0);
-	close(fd);
-	if (map == MAP_FAILED)
-		return;
+	sz = strbuf_read_file(&sb, orderfile, 0);
+	if (sz < 0)
+		die_errno(_("failed to read orderfile '%s'"), orderfile);
+	map = strbuf_detach(&sb, NULL);
 	endp = (char *) map + sz;
+
 	for (pass = 0; pass < 2; pass++) {
 		cnt = 0;
 		cp = map;
@@ -59,29 +52,24 @@ static void prepare_order(const char *orderfile)
 		}
 		if (pass == 0) {
 			order_cnt = cnt;
-			order = xmalloc(sizeof(*order) * cnt);
+			ALLOC_ARRAY(order, cnt);
 		}
 	}
 }
 
-struct pair_order {
-	struct diff_filepair *pair;
-	int orig_order;
-	int order;
-};
-
 static int match_order(const char *path)
 {
 	int i;
-	char p[PATH_MAX];
+	static struct strbuf p = STRBUF_INIT;
 
 	for (i = 0; i < order_cnt; i++) {
-		strcpy(p, path);
-		while (p[0]) {
+		strbuf_reset(&p);
+		strbuf_addstr(&p, path);
+		while (p.buf[0]) {
 			char *cp;
-			if (!fnmatch(order[i], p, 0))
+			if (!wildmatch(order[i], p.buf, 0))
 				return i;
-			cp = strrchr(p, '/');
+			cp = strrchr(p.buf, '/');
 			if (!cp)
 				break;
 			*cp = 0;
@@ -90,35 +78,54 @@ static int match_order(const char *path)
 	return order_cnt;
 }
 
-static int compare_pair_order(const void *a_, const void *b_)
+static int compare_objs_order(const void *a_, const void *b_)
 {
-	struct pair_order const *a, *b;
-	a = (struct pair_order const *)a_;
-	b = (struct pair_order const *)b_;
+	struct obj_order const *a, *b;
+	a = (struct obj_order const *)a_;
+	b = (struct obj_order const *)b_;
 	if (a->order != b->order)
 		return a->order - b->order;
 	return a->orig_order - b->orig_order;
 }
 
+void order_objects(const char *orderfile, obj_path_fn_t obj_path,
+		   struct obj_order *objs, int nr)
+{
+	int i;
+
+	if (!nr)
+		return;
+
+	prepare_order(orderfile);
+	for (i = 0; i < nr; i++) {
+		objs[i].orig_order = i;
+		objs[i].order = match_order(obj_path(objs[i].obj));
+	}
+	QSORT(objs, nr, compare_objs_order);
+}
+
+static const char *pair_pathtwo(void *obj)
+{
+	struct diff_filepair *pair = (struct diff_filepair *)obj;
+
+	return pair->two->path;
+}
+
 void diffcore_order(const char *orderfile)
 {
 	struct diff_queue_struct *q = &diff_queued_diff;
-	struct pair_order *o;
+	struct obj_order *o;
 	int i;
 
 	if (!q->nr)
 		return;
 
-	o = xmalloc(sizeof(*o) * q->nr);
-	prepare_order(orderfile);
-	for (i = 0; i < q->nr; i++) {
-		o[i].pair = q->queue[i];
-		o[i].orig_order = i;
-		o[i].order = match_order(o[i].pair->two->path);
-	}
-	qsort(o, q->nr, sizeof(*o), compare_pair_order);
+	ALLOC_ARRAY(o, q->nr);
 	for (i = 0; i < q->nr; i++)
-		q->queue[i] = o[i].pair;
+		o[i].obj = q->queue[i];
+	order_objects(orderfile, pair_pathtwo, o, q->nr);
+	for (i = 0; i < q->nr; i++)
+		q->queue[i] = o[i].obj;
 	free(o);
 	return;
 }

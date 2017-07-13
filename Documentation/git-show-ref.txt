@@ -11,7 +11,7 @@ SYNOPSIS
 'git show-ref' [-q|--quiet] [--verify] [--head] [-d|--dereference]
 	     [-s|--hash[=<n>]] [--abbrev[=<n>]] [--tags]
 	     [--heads] [--] [<pattern>...]
-'git show-ref' --exclude-existing[=<pattern>] < ref-list
+'git show-ref' --exclude-existing[=<pattern>]
 
 DESCRIPTION
 -----------
@@ -21,8 +21,11 @@ commit IDs. Results can be filtered using a pattern and tags can be
 dereferenced into object IDs. Additionally, it can be used to test whether a
 particular ref exists.
 
-The --exclude-existing form is a filter that does the inverse, it shows the
-refs from stdin that don't exist in the local repository.
+By default, shows the tags, heads, and remote refs.
+
+The --exclude-existing form is a filter that does the inverse. It reads
+refs from stdin, one ref per line, and shows those that don't exist in
+the local repository.
 
 Use of this utility is encouraged in favor of directly accessing files under
 the `.git` directory.
@@ -32,32 +35,32 @@ OPTIONS
 
 --head::
 
-	Show the HEAD reference.
+	Show the HEAD reference, even if it would normally be filtered out.
 
 --tags::
 --heads::
 
-	Limit to only "refs/heads" and "refs/tags", respectively.  These
-	options are not mutually exclusive; when given both, references stored
-	in "refs/heads" and "refs/tags" are displayed.
+	Limit to "refs/heads" and "refs/tags", respectively.  These options
+	are not mutually exclusive; when given both, references stored in
+	"refs/heads" and "refs/tags" are displayed.
 
 -d::
 --dereference::
 
-	Dereference tags into object IDs as well. They will be shown with "^{}"
+	Dereference tags into object IDs as well. They will be shown with "{caret}{}"
 	appended.
 
 -s::
 --hash[=<n>]::
 
-	Only show the SHA1 hash, not the reference name. When combined with
-	--dereference the dereferenced tag will still be shown after the SHA1.
+	Only show the SHA-1 hash, not the reference name. When combined with
+	--dereference the dereferenced tag will still be shown after the SHA-1.
 
 --verify::
 
 	Enable stricter reference checking by requiring an exact ref path.
 	Aside from returning an error code of 1, it will also print an error
-	message if '--quiet' was not specified.
+	message if `--quiet` was not specified.
 
 --abbrev[=<n>]::
 
@@ -67,15 +70,15 @@ OPTIONS
 -q::
 --quiet::
 
-	Do not print any results to stdout. When combined with '--verify' this
+	Do not print any results to stdout. When combined with `--verify` this
 	can be used to silently check if a reference exists.
 
 --exclude-existing[=<pattern>]::
 
 	Make 'git show-ref' act as a filter that reads refs from stdin of the
-	form "^(?:<anything>\s)?<refname>(?:\^\{\})?$" and performs the
-	following actions on each:
-	(1) strip "^{}" at the end of line if any;
+	form "`^(?:<anything>\s)?<refname>(?:\^{})?$`"
+	and performs the following actions on each:
+	(1) strip "{caret}{}" at the end of line if any;
 	(2) ignore if pattern is provided and does not head-match refname;
 	(3) warn if refname is not a well-formed refname and skip;
 	(4) ignore if refname is a ref that exists in the local repository;
@@ -84,7 +87,11 @@ OPTIONS
 
 <pattern>...::
 
-	Show references matching one or more patterns.
+	Show references matching one or more patterns. Patterns are matched from
+	the end of the full name, and only complete parts are matched, e.g.
+	'master' matches 'refs/heads/master', 'refs/remotes/origin/master',
+	'refs/tags/jedi/master' but not 'refs/heads/mymaster' or
+	'refs/remotes/master/jedi'.
 
 OUTPUT
 ------
@@ -127,7 +134,7 @@ use:
 This will show "refs/heads/master" but also "refs/remote/other-repo/master",
 if such references exists.
 
-When using the '--verify' flag, the command requires an exact path:
+When using the `--verify` flag, the command requires an exact path:
 
 -----------------------------------------------------------------------------
 	git show-ref --verify refs/heads/master
@@ -163,14 +170,16 @@ flag, so you can do
 
 to get a listing of all tags together with what they dereference.
 
+FILES
+-----
+`.git/refs/*`, `.git/packed-refs`
+
 SEE ALSO
 --------
-linkgit:git-ls-remote[1]
-
-AUTHORS
--------
-Written by Linus Torvalds <torvalds@osdl.org>.
-Man page by Jonas Fonseca <fonseca@diku.dk>.
+linkgit:git-for-each-ref[1],
+linkgit:git-ls-remote[1],
+linkgit:git-update-ref[1],
+linkgit:gitrepository-layout[5]
 
 GIT
 ---

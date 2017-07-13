@@ -35,7 +35,7 @@ test_expect_success 'merge tag' '
 	git checkout master &&
 	test_commit master-3 &&
 	git merge tag-1 &&
-	check_oneline "Merge commit Qtag-1Q"
+	check_oneline "Merge tag Qtag-1Q"
 '
 
 test_expect_success 'ambiguous tag' '
@@ -44,17 +44,17 @@ test_expect_success 'ambiguous tag' '
 	git checkout master &&
 	test_commit master-4 &&
 	git merge ambiguous &&
-	check_oneline "Merge commit QambiguousQ"
+	check_oneline "Merge tag QambiguousQ"
 '
 
-test_expect_success 'remote branch' '
+test_expect_success 'remote-tracking branch' '
 	git checkout -b remote master &&
 	test_commit remote-1 &&
 	git update-ref refs/remotes/origin/master remote &&
 	git checkout master &&
 	test_commit master-5 &&
 	git merge origin/master &&
-	check_oneline "Merge remote branch Qorigin/masterQ"
+	check_oneline "Merge remote-tracking branch Qorigin/masterQ"
 '
 
 test_done

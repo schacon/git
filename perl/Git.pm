@@ -7,6 +7,7 @@ Git - Perl interface to the Git version control system
 
 package Git;
 
+use 5.008;
 use strict;
 
 
@@ -57,8 +58,11 @@ require Exporter;
                 command_output_pipe command_input_pipe command_close_pipe
                 command_bidi_pipe command_close_bidi_pipe
                 version exec_path html_path hash_object git_cmd_try
-                remote_refs
-                temp_acquire temp_release temp_reset temp_path);
+                remote_refs prompt
+                get_tz_offset get_record
+                credential credential_read credential_write
+                temp_acquire temp_is_locked temp_release temp_reset temp_path
+                unquote_path);
 
 
 =head1 DESCRIPTION
@@ -98,9 +102,10 @@ increase notwithstanding).
 
 use Carp qw(carp croak); # but croak is bad - throw instead
 use Error qw(:try);
-use Cwd qw(abs_path);
+use Cwd qw(abs_path cwd);
 use IPC::Open2 qw(open2);
 use Fcntl qw(SEEK_SET SEEK_CUR);
+use Time::Local qw(timegm);
 }
 
 
@@ -172,7 +177,7 @@ sub repository {
 	}
 
 	if (defined $opts{Directory}) {
-		-d $opts{Directory} or throw Error::Simple("Directory not found: $!");
+		-d $opts{Directory} or throw Error::Simple("Directory not found: $opts{Directory} $!");
 
 		my $search = Git->repository(WorkingCopy => $opts{Directory});
 		my $dir;
@@ -184,7 +189,8 @@ sub repository {
 		};
 
 		if ($dir) {
-			$dir =~ m#^/# or $dir = $opts{Directory} . '/' . $dir;
+			_verify_require();
+			File::Spec->file_name_is_absolute($dir) or $dir = $opts{Directory} . '/' . $dir;
 			$opts{Repository} = abs_path($dir);
 
 			# If --git-dir went ok, this shouldn't die either.
@@ -266,13 +272,13 @@ sub command {
 
 	if (not defined wantarray) {
 		# Nothing to pepper the possible exception with.
-		_cmd_close($fh, $ctx);
+		_cmd_close($ctx, $fh);
 
 	} elsif (not wantarray) {
 		local $/;
 		my $text = <$fh>;
 		try {
-			_cmd_close($fh, $ctx);
+			_cmd_close($ctx, $fh);
 		} catch Git::Error::Command with {
 			# Pepper with the output:
 			my $E = shift;
@@ -285,7 +291,7 @@ sub command {
 		my @lines = <$fh>;
 		defined and chomp for @lines;
 		try {
-			_cmd_close($fh, $ctx);
+			_cmd_close($ctx, $fh);
 		} catch Git::Error::Command with {
 			my $E = shift;
 			$E->{'-outputref'} = \@lines;
@@ -312,7 +318,7 @@ sub command_oneline {
 	my $line = <$fh>;
 	defined $line and chomp $line;
 	try {
-		_cmd_close($fh, $ctx);
+		_cmd_close($ctx, $fh);
 	} catch Git::Error::Command with {
 		# Pepper with the output:
 		my $E = shift;
@@ -380,7 +386,7 @@ have more complicated structure.
 sub command_close_pipe {
 	my ($self, $fh, $ctx) = _maybe_self(@_);
 	$ctx ||= '<unknown>';
-	_cmd_close($fh, $ctx);
+	_cmd_close($ctx, $fh);
 }
 
 =item command_bidi_pipe ( COMMAND [, ARGUMENTS... ] )
@@ -388,14 +394,23 @@ sub command_close_pipe {
 Execute the given C<COMMAND> in the same way as command_output_pipe()
 does but return both an input pipe filehandle and an output pipe filehandle.
 
-The function will return return C<($pid, $pipe_in, $pipe_out, $ctx)>.
+The function will return C<($pid, $pipe_in, $pipe_out, $ctx)>.
 See C<command_close_bidi_pipe()> for details.
 
 =cut
 
 sub command_bidi_pipe {
 	my ($pid, $in, $out);
+	my ($self) = _maybe_self(@_);
+	local %ENV = %ENV;
+	my $cwd_save = undef;
+	if ($self) {
+		shift;
+		$cwd_save = cwd();
+		_setup_git_cmd_env($self);
+	}
 	$pid = open2($in, $out, 'git', @_);
+	chdir($cwd_save) if $cwd_save;
 	return ($pid, $in, $out, join(' ', @_));
 }
 
@@ -408,7 +423,7 @@ and it is the fourth value returned by C<command_bidi_pipe()>.  The call idiom
 is:
 
 	my ($pid, $in, $out, $ctx) = $r->command_bidi_pipe('cat-file --batch-check');
-	print "000000000\n" $out;
+	print $out "000000000\n";
 	while (<$in>) { ... }
 	$r->command_close_bidi_pipe($pid, $in, $out, $ctx);
 
@@ -416,23 +431,26 @@ Note that you should not rely on whatever actually is in C<CTX>;
 currently it is simply the command name but in future the context might
 have more complicated structure.
 
+C<PIPE_IN> and C<PIPE_OUT> may be C<undef> if they have been closed prior to
+calling this function.  This may be useful in a query-response type of
+commands where caller first writes a query and later reads response, eg:
+
+	my ($pid, $in, $out, $ctx) = $r->command_bidi_pipe('cat-file --batch-check');
+	print $out "000000000\n";
+	close $out;
+	while (<$in>) { ... }
+	$r->command_close_bidi_pipe($pid, $in, undef, $ctx);
+
+This idiom may prevent potential dead locks caused by data sent to the output
+pipe not being flushed and thus not reaching the executed command.
+
 =cut
 
 sub command_close_bidi_pipe {
 	local $?;
-	my ($pid, $in, $out, $ctx) = @_;
-	foreach my $fh ($in, $out) {
-		unless (close $fh) {
-			if ($!) {
-				carp "error closing pipe: $!";
-			} elsif ($? >> 8) {
-				throw Git::Error::Command($ctx, $? >>8);
-			}
-		}
-	}
-
+	my ($self, $pid, $in, $out, $ctx) = _maybe_self(@_);
+	_cmd_close($ctx, (grep { defined } ($in, $out)));
 	waitpid $pid, 0;
-
 	if ($? >> 8) {
 		throw Git::Error::Command($ctx, $? >>8);
 	}
@@ -502,6 +520,93 @@ C<git --html-path>). Useful mostly only internally.
 sub html_path { command_oneline('--html-path') }
 
 
+=item get_tz_offset ( TIME )
+
+Return the time zone offset from GMT in the form +/-HHMM where HH is
+the number of hours from GMT and MM is the number of minutes.  This is
+the equivalent of what strftime("%z", ...) would provide on a GNU
+platform.
+
+If TIME is not supplied, the current local time is used.
+
+=cut
+
+sub get_tz_offset {
+	# some systmes don't handle or mishandle %z, so be creative.
+	my $t = shift || time;
+	my $gm = timegm(localtime($t));
+	my $sign = qw( + + - )[ $gm <=> $t ];
+	return sprintf("%s%02d%02d", $sign, (gmtime(abs($t - $gm)))[2,1]);
+}
+
+=item get_record ( FILEHANDLE, INPUT_RECORD_SEPARATOR )
+
+Read one record from FILEHANDLE delimited by INPUT_RECORD_SEPARATOR,
+removing any trailing INPUT_RECORD_SEPARATOR.
+
+=cut
+
+sub get_record {
+	my ($fh, $rs) = @_;
+	local $/ = $rs;
+	my $rec = <$fh>;
+	chomp $rec if defined $rs;
+	$rec;
+}
+
+=item prompt ( PROMPT , ISPASSWORD  )
+
+Query user C<PROMPT> and return answer from user.
+
+Honours GIT_ASKPASS and SSH_ASKPASS environment variables for querying
+the user. If no *_ASKPASS variable is set or an error occoured,
+the terminal is tried as a fallback.
+If C<ISPASSWORD> is set and true, the terminal disables echo.
+
+=cut
+
+sub prompt {
+	my ($prompt, $isPassword) = @_;
+	my $ret;
+	if (exists $ENV{'GIT_ASKPASS'}) {
+		$ret = _prompt($ENV{'GIT_ASKPASS'}, $prompt);
+	}
+	if (!defined $ret && exists $ENV{'SSH_ASKPASS'}) {
+		$ret = _prompt($ENV{'SSH_ASKPASS'}, $prompt);
+	}
+	if (!defined $ret) {
+		print STDERR $prompt;
+		STDERR->flush;
+		if (defined $isPassword && $isPassword) {
+			require Term::ReadKey;
+			Term::ReadKey::ReadMode('noecho');
+			$ret = '';
+			while (defined(my $key = Term::ReadKey::ReadKey(0))) {
+				last if $key =~ /[\012\015]/; # \n\r
+				$ret .= $key;
+			}
+			Term::ReadKey::ReadMode('restore');
+			print STDERR "\n";
+			STDERR->flush;
+		} else {
+			chomp($ret = <STDIN>);
+		}
+	}
+	return $ret;
+}
+
+sub _prompt {
+	my ($askpass, $prompt) = @_;
+	return unless length $askpass;
+	$prompt =~ s/\n/ /g;
+	my $ret;
+	open my $fh, "-|", $askpass, $prompt or return;
+	$ret = <$fh>;
+	$ret =~ s/[\015\012]//g; # strip \r\n, chomp does not work on all systems (i.e. windows) as expected
+	close ($fh);
+	return $ret;
+}
+
 =item repo_path ()
 
 Return path to the git repository. Must be called on a repository instance.
@@ -545,7 +650,7 @@ sub wc_chdir {
 		or throw Error::Simple("bare repository");
 
 	-d $self->wc_path().'/'.$subdir
-		or throw Error::Simple("subdir not found: $!");
+		or throw Error::Simple("subdir not found: $subdir $!");
 	# Of course we will not "hold" the subdirectory so anyone
 	# can delete it now and we will never know. But at least we tried.
 
@@ -560,15 +665,68 @@ does. In scalar context requires the variable to be set only one time
 (exception is thrown otherwise), in array context returns allows the
 variable to be set multiple times and returns all the values.
 
-This currently wraps command('config') so it is not so fast.
-
 =cut
 
 sub config {
+	return _config_common({}, @_);
+}
+
+
+=item config_bool ( VARIABLE )
+
+Retrieve the bool configuration C<VARIABLE>. The return value
+is usable as a boolean in perl (and C<undef> if it's not defined,
+of course).
+
+=cut
+
+sub config_bool {
+	my $val = scalar _config_common({'kind' => '--bool'}, @_);
+
+	# Do not rewrite this as return (defined $val && $val eq 'true')
+	# as some callers do care what kind of falsehood they receive.
+	if (!defined $val) {
+		return undef;
+	} else {
+		return $val eq 'true';
+	}
+}
+
+
+=item config_path ( VARIABLE )
+
+Retrieve the path configuration C<VARIABLE>. The return value
+is an expanded path or C<undef> if it's not defined.
+
+=cut
+
+sub config_path {
+	return _config_common({'kind' => '--path'}, @_);
+}
+
+
+=item config_int ( VARIABLE )
+
+Retrieve the integer configuration C<VARIABLE>. The return value
+is simple decimal number.  An optional value suffix of 'k', 'm',
+or 'g' in the config file will cause the value to be multiplied
+by 1024, 1048576 (1024^2), or 1073741824 (1024^3) prior to output.
+It would return C<undef> if configuration variable is not defined.
+
+=cut
+
+sub config_int {
+	return scalar _config_common({'kind' => '--int'}, @_);
+}
+
+# Common subroutine to implement bulk of what the config* family of methods
+# do. This currently wraps command('config') so it is not so fast.
+sub _config_common {
+	my ($opts) = shift @_;
 	my ($self, $var) = _maybe_self(@_);
 
 	try {
-		my @cmd = ('config');
+		my @cmd = ('config', $opts->{'kind'} ? $opts->{'kind'} : ());
 		unshift @cmd, $self if $self;
 		if (wantarray) {
 			return command(@cmd, '--get-all', $var);
@@ -580,67 +738,6 @@ sub config {
 		if ($E->value() == 1) {
 			# Key not found.
 			return;
-		} else {
-			throw $E;
-		}
-	};
-}
-
-
-=item config_bool ( VARIABLE )
-
-Retrieve the bool configuration C<VARIABLE>. The return value
-is usable as a boolean in perl (and C<undef> if it's not defined,
-of course).
-
-This currently wraps command('config') so it is not so fast.
-
-=cut
-
-sub config_bool {
-	my ($self, $var) = _maybe_self(@_);
-
-	try {
-		my @cmd = ('config', '--bool', '--get', $var);
-		unshift @cmd, $self if $self;
-		my $val = command_oneline(@cmd);
-		return undef unless defined $val;
-		return $val eq 'true';
-	} catch Git::Error::Command with {
-		my $E = shift;
-		if ($E->value() == 1) {
-			# Key not found.
-			return undef;
-		} else {
-			throw $E;
-		}
-	};
-}
-
-=item config_int ( VARIABLE )
-
-Retrieve the integer configuration C<VARIABLE>. The return value
-is simple decimal number.  An optional value suffix of 'k', 'm',
-or 'g' in the config file will cause the value to be multiplied
-by 1024, 1048576 (1024^2), or 1073741824 (1024^3) prior to output.
-It would return C<undef> if configuration variable is not defined,
-
-This currently wraps command('config') so it is not so fast.
-
-=cut
-
-sub config_int {
-	my ($self, $var) = _maybe_self(@_);
-
-	try {
-		my @cmd = ('config', '--int', '--get', $var);
-		unshift @cmd, $self if $self;
-		return command_oneline(@cmd);
-	} catch Git::Error::Command with {
-		my $E = shift;
-		if ($E->value() == 1) {
-			# Key not found.
-			return undef;
 		} else {
 			throw $E;
 		}
@@ -689,7 +786,7 @@ The hash is in the format C<refname =\> hash>. For tags, the C<refname> entry
 contains the tag object while a C<refname^{}> entry gives the tagged objects.
 
 C<REPOSITORY> has the same meaning as the appropriate C<git-ls-remote>
-argument; either an URL or a remote name (if called on a repository instance).
+argument; either a URL or a remote name (if called on a repository instance).
 C<GROUPS> is an optional arrayref that can contain 'tags' to return all the
 tags and/or 'heads' to return all the heads. C<REFGLOB> is an optional array
 of strings containing a shell-like glob to further limit the refs returned in
@@ -783,6 +880,76 @@ sub ident_person {
 	return "$ident[0] <$ident[1]>";
 }
 
+=item parse_mailboxes
+
+Return an array of mailboxes extracted from a string.
+
+=cut
+
+# Very close to Mail::Address's parser, but we still have minor
+# differences in some cases (see t9000 for examples).
+sub parse_mailboxes {
+	my $re_comment = qr/\((?:[^)]*)\)/;
+	my $re_quote = qr/"(?:[^\"\\]|\\.)*"/;
+	my $re_word = qr/(?:[^]["\s()<>:;@\\,.]|\\.)+/;
+
+	# divide the string in tokens of the above form
+	my $re_token = qr/(?:$re_quote|$re_word|$re_comment|\S)/;
+	my @tokens = map { $_ =~ /\s*($re_token)\s*/g } @_;
+	my $end_of_addr_seen = 0;
+
+	# add a delimiter to simplify treatment for the last mailbox
+	push @tokens, ",";
+
+	my (@addr_list, @phrase, @address, @comment, @buffer) = ();
+	foreach my $token (@tokens) {
+		if ($token =~ /^[,;]$/) {
+			# if buffer still contains undeterminated strings
+			# append it at the end of @address or @phrase
+			if ($end_of_addr_seen) {
+				push @phrase, @buffer;
+			} else {
+				push @address, @buffer;
+			}
+
+			my $str_phrase = join ' ', @phrase;
+			my $str_address = join '', @address;
+			my $str_comment = join ' ', @comment;
+
+			# quote are necessary if phrase contains
+			# special characters
+			if ($str_phrase =~ /[][()<>:;@\\,.\000-\037\177]/) {
+				$str_phrase =~ s/(^|[^\\])"/$1/g;
+				$str_phrase = qq["$str_phrase"];
+			}
+
+			# add "<>" around the address if necessary
+			if ($str_address ne "" && $str_phrase ne "") {
+				$str_address = qq[<$str_address>];
+			}
+
+			my $str_mailbox = "$str_phrase $str_address $str_comment";
+			$str_mailbox =~ s/^\s*|\s*$//g;
+			push @addr_list, $str_mailbox if ($str_mailbox);
+
+			@phrase = @address = @comment = @buffer = ();
+			$end_of_addr_seen = 0;
+		} elsif ($token =~ /^\(/) {
+			push @comment, $token;
+		} elsif ($token eq "<") {
+			push @phrase, (splice @address), (splice @buffer);
+		} elsif ($token eq ">") {
+			$end_of_addr_seen = 1;
+			push @address, (splice @buffer);
+		} elsif ($token eq "@" && !$end_of_addr_seen) {
+			push @address, (splice @buffer), "@";
+		} else {
+			push @buffer, $token;
+		}
+	}
+
+	return @addr_list;
+}
 
 =item hash_object ( TYPE, FILENAME )
 
@@ -842,7 +1009,7 @@ sub _open_hash_and_insert_object_if_needed {
 
 	($self->{hash_object_pid}, $self->{hash_object_in},
 	 $self->{hash_object_out}, $self->{hash_object_ctx}) =
-		command_bidi_pipe(qw(hash-object -w --stdin-paths --no-filters));
+		$self->command_bidi_pipe(qw(hash-object -w --stdin-paths --no-filters));
 }
 
 sub _close_hash_and_insert_object {
@@ -888,20 +1055,22 @@ sub cat_blob {
 	my $size = $1;
 
 	my $blob;
-	my $bytesRead = 0;
+	my $bytesLeft = $size;
 
 	while (1) {
-		my $bytesLeft = $size - $bytesRead;
 		last unless $bytesLeft;
 
 		my $bytesToRead = $bytesLeft < 1024 ? $bytesLeft : 1024;
-		my $read = read($in, $blob, $bytesToRead, $bytesRead);
+		my $read = read($in, $blob, $bytesToRead);
 		unless (defined($read)) {
 			$self->_close_cat_blob();
 			throw Error::Simple("in pipe went bad");
 		}
-
-		$bytesRead += $read;
+		unless (print $fh $blob) {
+			$self->_close_cat_blob();
+			throw Error::Simple("couldn't write to passed in filehandle");
+		}
+		$bytesLeft -= $read;
 	}
 
 	# Skip past the trailing newline.
@@ -916,11 +1085,6 @@ sub cat_blob {
 		throw Error::Simple("didn't find newline after blob");
 	}
 
-	unless (print $fh $blob) {
-		$self->_close_cat_blob();
-		throw Error::Simple("couldn't write to passed in filehandle");
-	}
-
 	return $size;
 }
 
@@ -931,7 +1095,7 @@ sub _open_cat_blob_if_needed {
 
 	($self->{cat_blob_pid}, $self->{cat_blob_in},
 	 $self->{cat_blob_out}, $self->{cat_blob_ctx}) =
-		command_bidi_pipe(qw(cat-file --batch));
+		$self->command_bidi_pipe(qw(cat-file --batch));
 }
 
 sub _close_cat_blob {
@@ -946,13 +1110,163 @@ sub _close_cat_blob {
 }
 
 
+=item credential_read( FILEHANDLE )
+
+Reads credential key-value pairs from C<FILEHANDLE>.  Reading stops at EOF or
+when an empty line is encountered.  Each line must be of the form C<key=value>
+with a non-empty key.  Function returns hash with all read values.  Any white
+space (other than new-line character) is preserved.
+
+=cut
+
+sub credential_read {
+	my ($self, $reader) = _maybe_self(@_);
+	my %credential;
+	while (<$reader>) {
+		chomp;
+		if ($_ eq '') {
+			last;
+		} elsif (!/^([^=]+)=(.*)$/) {
+			throw Error::Simple("unable to parse git credential data:\n$_");
+		}
+		$credential{$1} = $2;
+	}
+	return %credential;
+}
+
+=item credential_write( FILEHANDLE, CREDENTIAL_HASHREF )
+
+Writes credential key-value pairs from hash referenced by
+C<CREDENTIAL_HASHREF> to C<FILEHANDLE>.  Keys and values cannot contain
+new-lines or NUL bytes characters, and key cannot contain equal signs nor be
+empty (if they do Error::Simple is thrown).  Any white space is preserved.  If
+value for a key is C<undef>, it will be skipped.
+
+If C<'url'> key exists it will be written first.  (All the other key-value
+pairs are written in sorted order but you should not depend on that).  Once
+all lines are written, an empty line is printed.
+
+=cut
+
+sub credential_write {
+	my ($self, $writer, $credential) = _maybe_self(@_);
+	my ($key, $value);
+
+	# Check if $credential is valid prior to writing anything
+	while (($key, $value) = each %$credential) {
+		if (!defined $key || !length $key) {
+			throw Error::Simple("credential key empty or undefined");
+		} elsif ($key =~ /[=\n\0]/) {
+			throw Error::Simple("credential key contains invalid characters: $key");
+		} elsif (defined $value && $value =~ /[\n\0]/) {
+			throw Error::Simple("credential value for key=$key contains invalid characters: $value");
+		}
+	}
+
+	for $key (sort {
+		# url overwrites other fields, so it must come first
+		return -1 if $a eq 'url';
+		return  1 if $b eq 'url';
+		return $a cmp $b;
+	} keys %$credential) {
+		if (defined $credential->{$key}) {
+			print $writer $key, '=', $credential->{$key}, "\n";
+		}
+	}
+	print $writer "\n";
+}
+
+sub _credential_run {
+	my ($self, $credential, $op) = _maybe_self(@_);
+	my ($pid, $reader, $writer, $ctx) = command_bidi_pipe('credential', $op);
+
+	credential_write $writer, $credential;
+	close $writer;
+
+	if ($op eq "fill") {
+		%$credential = credential_read $reader;
+	}
+	if (<$reader>) {
+		throw Error::Simple("unexpected output from git credential $op response:\n$_\n");
+	}
+
+	command_close_bidi_pipe($pid, $reader, undef, $ctx);
+}
+
+=item credential( CREDENTIAL_HASHREF [, OPERATION ] )
+
+=item credential( CREDENTIAL_HASHREF, CODE )
+
+Executes C<git credential> for a given set of credentials and specified
+operation.  In both forms C<CREDENTIAL_HASHREF> needs to be a reference to
+a hash which stores credentials.  Under certain conditions the hash can
+change.
+
+In the first form, C<OPERATION> can be C<'fill'>, C<'approve'> or C<'reject'>,
+and function will execute corresponding C<git credential> sub-command.  If
+it's omitted C<'fill'> is assumed.  In case of C<'fill'> the values stored in
+C<CREDENTIAL_HASHREF> will be changed to the ones returned by the C<git
+credential fill> command.  The usual usage would look something like:
+
+	my %cred = (
+		'protocol' => 'https',
+		'host' => 'example.com',
+		'username' => 'bob'
+	);
+	Git::credential \%cred;
+	if (try_to_authenticate($cred{'username'}, $cred{'password'})) {
+		Git::credential \%cred, 'approve';
+		... do more stuff ...
+	} else {
+		Git::credential \%cred, 'reject';
+	}
+
+In the second form, C<CODE> needs to be a reference to a subroutine.  The
+function will execute C<git credential fill> to fill the provided credential
+hash, then call C<CODE> with C<CREDENTIAL_HASHREF> as the sole argument.  If
+C<CODE>'s return value is defined, the function will execute C<git credential
+approve> (if return value yields true) or C<git credential reject> (if return
+value is false).  If the return value is undef, nothing at all is executed;
+this is useful, for example, if the credential could neither be verified nor
+rejected due to an unrelated network error.  The return value is the same as
+what C<CODE> returns.  With this form, the usage might look as follows:
+
+	if (Git::credential {
+		'protocol' => 'https',
+		'host' => 'example.com',
+		'username' => 'bob'
+	}, sub {
+		my $cred = shift;
+		return !!try_to_authenticate($cred->{'username'},
+		                             $cred->{'password'});
+	}) {
+		... do more stuff ...
+	}
+
+=cut
+
+sub credential {
+	my ($self, $credential, $op_or_code) = (_maybe_self(@_), 'fill');
+
+	if ('CODE' eq ref $op_or_code) {
+		_credential_run $credential, 'fill';
+		my $ret = $op_or_code->($credential);
+		if (defined $ret) {
+			_credential_run $credential, $ret ? 'approve' : 'reject';
+		}
+		return $ret;
+	} else {
+		_credential_run $credential, $op_or_code;
+	}
+}
+
 { # %TEMP_* Lexical Context
 
 my (%TEMP_FILEMAP, %TEMP_FILES);
 
 =item temp_acquire ( NAME )
 
-Attempts to retreive the temporary file mapped to the string C<NAME>. If an
+Attempts to retrieve the temporary file mapped to the string C<NAME>. If an
 associated temp file has not been created this session or was closed, it is
 created, cached, and set for autoflush and binmode.
 
@@ -976,6 +1290,35 @@ sub temp_acquire {
 
 	$TEMP_FILES{$temp_fd}{locked} = 1;
 	$temp_fd;
+}
+
+=item temp_is_locked ( NAME )
+
+Returns true if the internal lock created by a previous C<temp_acquire()>
+call with C<NAME> is still in effect.
+
+When temp_acquire is called on a C<NAME>, it internally locks the temporary
+file mapped to C<NAME>.  That lock will not be released until C<temp_release()>
+is called with either the original C<NAME> or the L<File::Handle> that was
+returned from the original call to temp_acquire.
+
+Subsequent attempts to call C<temp_acquire()> with the same C<NAME> will fail
+unless there has been an intervening C<temp_release()> call for that C<NAME>
+(or its corresponding L<File::Handle> that was returned by the original
+C<temp_acquire()> call).
+
+If true is returned by C<temp_is_locked()> for a C<NAME>, an attempt to
+C<temp_acquire()> the same C<NAME> will cause an error unless
+C<temp_release> is first called on that C<NAME> (or its corresponding
+L<File::Handle> that was returned by the original C<temp_acquire()> call).
+
+=cut
+
+sub temp_is_locked {
+	my ($self, $name) = _maybe_self(@_);
+	my $temp_fd = \$TEMP_FILEMAP{$name};
+
+	defined $$temp_fd && $$temp_fd->opened && $TEMP_FILES{$$temp_fd}{locked};
 }
 
 =item temp_release ( NAME )
@@ -1037,8 +1380,11 @@ sub _temp_cache {
 			$tmpdir = $self->repo_path();
 		}
 
-		($$temp_fd, $fname) = File::Temp->tempfile(
-			'Git_XXXXXX', UNLINK => 1, DIR => $tmpdir,
+		my $n = $name;
+		$n =~ s/\W/_/g; # no strange chars
+
+		($$temp_fd, $fname) = File::Temp::tempfile(
+			"Git_${n}_XXXXXX", UNLINK => 1, DIR => $tmpdir,
 			) or throw Error::Simple("couldn't open new temp file");
 
 		$$temp_fd->autoflush;
@@ -1092,6 +1438,95 @@ sub END {
 }
 
 } # %TEMP_* Lexical Context
+
+=item prefix_lines ( PREFIX, STRING [, STRING... ])
+
+Prefixes lines in C<STRING> with C<PREFIX>.
+
+=cut
+
+sub prefix_lines {
+	my $prefix = shift;
+	my $string = join("\n", @_);
+	$string =~ s/^/$prefix/mg;
+	return $string;
+}
+
+=item unquote_path ( PATH )
+
+Unquote a quoted path containing c-escapes as returned by ls-files etc.
+when not using -z or when parsing the output of diff -u.
+
+=cut
+
+{
+	my %cquote_map = (
+		"a" => chr(7),
+		"b" => chr(8),
+		"t" => chr(9),
+		"n" => chr(10),
+		"v" => chr(11),
+		"f" => chr(12),
+		"r" => chr(13),
+		"\\" => "\\",
+		"\042" => "\042",
+	);
+
+	sub unquote_path {
+		local ($_) = @_;
+		my ($retval, $remainder);
+		if (!/^\042(.*)\042$/) {
+			return $_;
+		}
+		($_, $retval) = ($1, "");
+		while (/^([^\\]*)\\(.*)$/) {
+			$remainder = $2;
+			$retval .= $1;
+			for ($remainder) {
+				if (/^([0-3][0-7][0-7])(.*)$/) {
+					$retval .= chr(oct($1));
+					$_ = $2;
+					last;
+				}
+				if (/^([\\\042abtnvfr])(.*)$/) {
+					$retval .= $cquote_map{$1};
+					$_ = $2;
+					last;
+				}
+				# This is malformed
+				throw Error::Simple("invalid quoted path $_[0]");
+			}
+			$_ = $remainder;
+		}
+		$retval .= $_;
+		return $retval;
+	}
+}
+
+=item get_comment_line_char ( )
+
+Gets the core.commentchar configuration value.
+The value falls-back to '#' if core.commentchar is set to 'auto'.
+
+=cut
+
+sub get_comment_line_char {
+	my $comment_line_char = config("core.commentchar") || '#';
+	$comment_line_char = '#' if ($comment_line_char eq 'auto');
+	$comment_line_char = '#' if (length($comment_line_char) != 1);
+	return $comment_line_char;
+}
+
+=item comment_lines ( STRING [, STRING... ])
+
+Comments lines following core.commentchar configuration.
+
+=cut
+
+sub comment_lines {
+	my $comment_line_char = get_comment_line_char;
+	return prefix_lines("$comment_line_char ", @_);
+}
 
 =back
 
@@ -1261,12 +1696,12 @@ sub _command_common_pipe {
 		if (not defined $pid) {
 			throw Error::Simple("open failed: $!");
 		} elsif ($pid == 0) {
-			if (defined $opts{STDERR}) {
-				close STDERR;
-			}
 			if ($opts{STDERR}) {
 				open (STDERR, '>&', $opts{STDERR})
 					or die "dup failed: $!";
+			} elsif (defined $opts{STDERR}) {
+				open (STDERR, '>', '/dev/null')
+					or die "opening /dev/null failed: $!";
 			}
 			_cmd_exec($self, $cmd, @args);
 		}
@@ -1278,6 +1713,14 @@ sub _command_common_pipe {
 # for the given repository and execute the git command.
 sub _cmd_exec {
 	my ($self, @args) = @_;
+	_setup_git_cmd_env($self);
+	_execv_git_cmd(@args);
+	die qq[exec "@args" failed: $!];
+}
+
+# set up the appropriate state for git command
+sub _setup_git_cmd_env {
+	my $self = shift;
 	if ($self) {
 		$self->repo_path() and $ENV{'GIT_DIR'} = $self->repo_path();
 		$self->repo_path() and $self->wc_path()
@@ -1285,8 +1728,6 @@ sub _cmd_exec {
 		$self->wc_path() and chdir($self->wc_path());
 		$self->wc_subdir() and chdir($self->wc_subdir());
 	}
-	_execv_git_cmd(@args);
-	die qq[exec "@args" failed: $!];
 }
 
 # Execute the given Git command ($_[0]) with arguments ($_[1..])
@@ -1295,9 +1736,11 @@ sub _execv_git_cmd { exec('git', @_); }
 
 # Close pipe to a subprocess.
 sub _cmd_close {
-	my ($fh, $ctx) = @_;
-	if (not close $fh) {
-		if ($!) {
+	my $ctx = shift @_;
+	foreach my $fh (@_) {
+		if (close $fh) {
+			# nop
+		} elsif ($!) {
 			# It's just close, no point in fatalities
 			carp "error closing pipe: $!";
 		} elsif ($? >> 8) {

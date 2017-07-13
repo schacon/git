@@ -6,12 +6,6 @@ test_description='git checkout to switch between branches with symlink<->dir'
 
 . ./test-lib.sh
 
-if ! test_have_prereq SYMLINKS
-then
-	say "symbolic links not supported - skipping tests"
-	test_done
-fi
-
 test_expect_success setup '
 
 	mkdir frotz &&
@@ -23,7 +17,7 @@ test_expect_success setup '
 	git branch side &&
 
 	echo goodbye >nitfol &&
-	git add nitfol
+	git add nitfol &&
 	test_tick &&
 	git commit -m "master adds file nitfol" &&
 
@@ -31,8 +25,8 @@ test_expect_success setup '
 
 	git rm --cached frotz/filfre &&
 	mv frotz xyzzy &&
-	ln -s xyzzy frotz &&
-	git add xyzzy/filfre frotz &&
+	test_ln_s_add xyzzy frotz &&
+	git add xyzzy/filfre &&
 	test_tick &&
 	git commit -m "side moves frotz/ to xyzzy/ and adds frotz->xyzzy/"
 

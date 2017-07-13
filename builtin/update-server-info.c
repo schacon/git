@@ -1,9 +1,10 @@
 #include "cache.h"
+#include "config.h"
 #include "builtin.h"
 #include "parse-options.h"
 
 static const char * const update_server_info_usage[] = {
-	"git update-server-info [--force]",
+	N_("git update-server-info [--force]"),
 	NULL
 };
 
@@ -11,11 +12,11 @@ int cmd_update_server_info(int argc, const char **argv, const char *prefix)
 {
 	int force = 0;
 	struct option options[] = {
-		OPT_BOOLEAN('f', "force", &force,
-			"update the info files from scratch"),
+		OPT__FORCE(&force, N_("update the info files from scratch")),
 		OPT_END()
 	};
 
+	git_config(git_default_config, NULL);
 	argc = parse_options(argc, argv, prefix, options,
 			     update_server_info_usage, 0);
 	if (argc > 0)

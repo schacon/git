@@ -1,7 +1,7 @@
 parse-options API
 =================
 
-The parse-options API is used to parse and massage options in git
+The parse-options API is used to parse and massage options in Git
 and to provide a usage help with consistent look.
 
 Basics
@@ -21,7 +21,7 @@ that allow to change the behavior of a command.
 * There are basically two forms of options:
   'Short options' consist of one dash (`-`) and one alphanumeric
   character.
-  'Long options' begin with two dashes (`\--`) and some
+  'Long options' begin with two dashes (`--`) and some
   alphanumeric characters.
 
 * Options are case-sensitive.
@@ -29,9 +29,9 @@ that allow to change the behavior of a command.
 
 The parse-options API allows:
 
-* 'sticked' and 'separate form' of options with arguments.
-  `-oArg` is sticked, `-o Arg` is separate form.
-  `\--option=Arg` is sticked, `\--option Arg` is separate form.
+* 'stuck' and 'separate form' of options with arguments.
+  `-oArg` is stuck, `-o Arg` is separate form.
+  `--option=Arg` is stuck, `--option Arg` is separate form.
 
 * Long options may be 'abbreviated', as long as the abbreviation
   is unambiguous.
@@ -39,11 +39,14 @@ The parse-options API allows:
 * Short options may be bundled, e.g. `-a -b` can be specified as `-ab`.
 
 * Boolean long options can be 'negated' (or 'unset') by prepending
-  `no-`, e.g. `\--no-abbrev` instead of `\--abbrev`.
+  `no-`, e.g. `--no-abbrev` instead of `--abbrev`. Conversely,
+  options that begin with `no-` can be 'negated' by removing it.
+  Other long options can be unset (e.g., set string to NULL, set
+  integer to 0) by prepending `no-`.
 
-* Options and non-option arguments can clearly be separated using the `\--`
-  option, e.g. `-a -b \--option \-- \--this-is-a-file` indicates that
-  `\--this-is-a-file` must not be processed as an option.
+* Options and non-option arguments can clearly be separated using the `--`
+  option, e.g. `-a -b --option -- --this-is-a-file` indicates that
+  `--this-is-a-file` must not be processed as an option.
 
 Steps to parse options
 ----------------------
@@ -75,7 +78,7 @@ before the full parser, which in turn shows the full help message.
 Flags are the bitwise-or of:
 
 `PARSE_OPT_KEEP_DASHDASH`::
-	Keep the `\--` that usually separates options from
+	Keep the `--` that usually separates options from
 	non-option arguments.
 
 `PARSE_OPT_STOP_AT_NON_OPTION`::
@@ -113,28 +116,40 @@ say `static struct option builtin_add_options[]`.
 There are some macros to easily define options:
 
 `OPT__ABBREV(&int_var)`::
-	Add `\--abbrev[=<n>]`.
+	Add `--abbrev[=<n>]`.
 
 `OPT__COLOR(&int_var, description)`::
-	Add `\--color[=<when>]` and `--no-color`.
+	Add `--color[=<when>]` and `--no-color`.
 
-`OPT__DRY_RUN(&int_var)`::
-	Add `-n, \--dry-run`.
+`OPT__DRY_RUN(&int_var, description)`::
+	Add `-n, --dry-run`.
 
-`OPT__QUIET(&int_var)`::
-	Add `-q, \--quiet`.
+`OPT__FORCE(&int_var, description)`::
+	Add `-f, --force`.
 
-`OPT__VERBOSE(&int_var)`::
-	Add `-v, \--verbose`.
+`OPT__QUIET(&int_var, description)`::
+	Add `-q, --quiet`.
+
+`OPT__VERBOSE(&int_var, description)`::
+	Add `-v, --verbose`.
 
 `OPT_GROUP(description)`::
 	Start an option group. `description` is a short string that
 	describes the group or an empty string.
 	Start the description with an upper-case letter.
 
-`OPT_BOOLEAN(short, long, &int_var, description)`::
-	Introduce a boolean option.
-	`int_var` is incremented on each use.
+`OPT_BOOL(short, long, &int_var, description)`::
+	Introduce a boolean option. `int_var` is set to one with
+	`--option` and set to zero with `--no-option`.
+
+`OPT_COUNTUP(short, long, &int_var, description)`::
+	Introduce a count-up option.
+	Each use of `--option` increments `int_var`, starting from zero
+	(even if initially negative), and `--no-option` resets it to
+	zero. To determine if `--option` or `--no-option` was encountered at
+	all, initialize `int_var` to a negative value, and if it is still
+	negative after parse_options(), then neither `--option` nor
+	`--no-option` was seen.
 
 `OPT_BIT(short, long, &int_var, description, mask)`::
 	Introduce a boolean option.
@@ -145,24 +160,36 @@ There are some macros to easily define options:
 	If used, `int_var` is bitwise-anded with the inverted `mask`.
 
 `OPT_SET_INT(short, long, &int_var, description, integer)`::
-	Introduce a boolean option.
-	If used, set `int_var` to `integer`.
-
-`OPT_SET_PTR(short, long, &ptr_var, description, ptr)`::
-	Introduce a boolean option.
-	If used, set `ptr_var` to `ptr`.
+	Introduce an integer option.
+	`int_var` is set to `integer` with `--option`, and
+	reset to zero with `--no-option`.
 
 `OPT_STRING(short, long, &str_var, arg_str, description)`::
 	Introduce an option with string argument.
 	The string argument is put into `str_var`.
 
+`OPT_STRING_LIST(short, long, &struct string_list, arg_str, description)`::
+	Introduce an option with string argument.
+	The string argument is stored as an element in `string_list`.
+	Use of `--no-option` will clear the list of preceding values.
+
 `OPT_INTEGER(short, long, &int_var, description)`::
 	Introduce an option with integer argument.
 	The integer is put into `int_var`.
 
-`OPT_DATE(short, long, &int_var, description)`::
+`OPT_MAGNITUDE(short, long, &unsigned_long_var, description)`::
+	Introduce an option with a size argument. The argument must be a
+	non-negative integer and may include a suffix of 'k', 'm' or 'g' to
+	scale the provided value by 1024, 1024^2 or 1024^3 respectively.
+	The scaled value is put into `unsigned_long_var`.
+
+`OPT_DATE(short, long, &timestamp_t_var, description)`::
 	Introduce an option with date argument, see `approxidate()`.
-	The timestamp is put into `int_var`.
+	The timestamp is put into `timestamp_t_var`.
+
+`OPT_EXPIRY_DATE(short, long, &timestamp_t_var, description)`::
+	Introduce an option with expiry date argument, see `parse_expiry_date()`.
+	The timestamp is put into `timestamp_t_var`.
 
 `OPT_CALLBACK(short, long, &var, arg_str, description, func_ptr)`::
 	Introduce an option with argument.
@@ -195,16 +222,41 @@ There are some macros to easily define options:
 	"auto", set `int_var` to 1 if stdout is a tty or a pager,
 	0 otherwise.
 
+`OPT_NOOP_NOARG(short, long)`::
+	Introduce an option that has no effect and takes no arguments.
+	Use it to hide deprecated options that are still to be recognized
+	and ignored silently.
+
+`OPT_PASSTHRU(short, long, &char_var, arg_str, description, flags)`::
+	Introduce an option that will be reconstructed into a char* string,
+	which must be initialized to NULL. This is useful when you need to
+	pass the command-line option to another command. Any previous value
+	will be overwritten, so this should only be used for options where
+	the last one specified on the command line wins.
+
+`OPT_PASSTHRU_ARGV(short, long, &argv_array_var, arg_str, description, flags)`::
+	Introduce an option where all instances of it on the command-line will
+	be reconstructed into an argv_array. This is useful when you need to
+	pass the command-line option, which can be specified multiple times,
+	to another command.
+
+`OPT_CMDMODE(short, long, &int_var, description, enum_val)`::
+	Define an "operation mode" option, only one of which in the same
+	group of "operating mode" options that share the same `int_var`
+	can be given by the user. `enum_val` is set to `int_var` when the
+	option is used, but an error is reported if other "operating mode"
+	option has already set its value to the same `int_var`.
+
 
 The last element of the array must be `OPT_END()`.
 
 If not stated otherwise, interpret the arguments as follows:
 
 * `short` is a character for the short option
-  (e.g. `\'e\'` for `-e`, use `0` to omit),
+  (e.g. `'e'` for `-e`, use `0` to omit),
 
 * `long` is a string for the long option
-  (e.g. `"example"` for `\--example`, use `NULL` to omit),
+  (e.g. `"example"` for `--example`, use `NULL` to omit),
 
 * `int_var` is an integer variable,
 
@@ -229,7 +281,7 @@ The callback mechanism is as follows:
 
 * Inside `func`, the only interesting member of the structure
   given by `opt` is the void pointer `opt->value`.
-  `\*opt->value` will be the value that is saved into `var`, if you
+  `*opt->value` will be the value that is saved into `var`, if you
   use `OPT_CALLBACK()`.
   For example, do `*(unsigned long *)opt->value = 42;` to get 42
   into an `unsigned long` variable.
@@ -254,10 +306,10 @@ Examples
 --------
 
 See `test-parse-options.c` and
-`builtin-add.c`,
-`builtin-clone.c`,
-`builtin-commit.c`,
-`builtin-fetch.c`,
-`builtin-fsck.c`,
-`builtin-rm.c`
+`builtin/add.c`,
+`builtin/clone.c`,
+`builtin/commit.c`,
+`builtin/fetch.c`,
+`builtin/fsck.c`,
+`builtin/rm.c`
 for real-world examples.

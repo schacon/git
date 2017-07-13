@@ -1,15 +1,19 @@
-#!/bin/sh
-#
-# This is included in commands that either have to be run from the toplevel
-# of the repository, or with GIT_DIR environment variable properly.
-# If the GIT_DIR does not look like the right correct git-repository,
-# it dies.
+# This shell scriplet is meant to be included by other shell scripts
+# to set up some variables pointing at the normal git directories and
+# a few helper shell functions.
 
 # Having this variable in your environment would break scripts because
 # you would cause "cd" to be taken to unexpected places.  If you
 # like CDPATH, define it for your interactive shell sessions without
 # exporting it.
+# But we protect ourselves from such a user mistake nevertheless.
 unset CDPATH
+
+# Similarly for IFS, but some shells (e.g. FreeBSD 7.2) are buggy and
+# do not equate an unset IFS with IFS with the default, so here is
+# an explicit SP HT LF.
+IFS=' 	
+'
 
 git_broken_path_fix () {
 	case ":$PATH:" in
@@ -39,9 +43,18 @@ git_broken_path_fix () {
 
 # @@BROKEN_PATH_FIX@@
 
-die() {
-	echo >&2 "$@"
-	exit 1
+# Source git-sh-i18n for gettext support.
+. "$(git --exec-path)/git-sh-i18n"
+
+die () {
+	die_with_status 1 "$@"
+}
+
+die_with_status () {
+	status=$1
+	shift
+	printf >&2 '%s\n' "$*"
+	exit "$status"
 }
 
 GIT_QUIET=
@@ -62,6 +75,8 @@ if test -n "$OPTIONS_SPEC"; then
 	parseopt_extra=
 	[ -n "$OPTIONS_KEEPDASHDASH" ] &&
 		parseopt_extra="--keep-dashdash"
+	[ -n "$OPTIONS_STUCKLONG" ] &&
+		parseopt_extra="$parseopt_extra --stuck-long"
 
 	eval "$(
 		echo "$OPTIONS_SPEC" |
@@ -69,27 +84,61 @@ if test -n "$OPTIONS_SPEC"; then
 		echo exit $?
 	)"
 else
-	dashless=$(basename "$0" | sed -e 's/-/ /')
+	dashless=$(basename -- "$0" | sed -e 's/-/ /')
 	usage() {
-		die "Usage: $dashless $USAGE"
+		die "$(eval_gettext "usage: \$dashless \$USAGE")"
 	}
 
 	if [ -z "$LONG_USAGE" ]
 	then
-		LONG_USAGE="Usage: $dashless $USAGE"
+		LONG_USAGE="$(eval_gettext "usage: \$dashless \$USAGE")"
 	else
-		LONG_USAGE="Usage: $dashless $USAGE
+		LONG_USAGE="$(eval_gettext "usage: \$dashless \$USAGE
 
-$LONG_USAGE"
+$LONG_USAGE")"
 	fi
 
 	case "$1" in
-		-h|--h|--he|--hel|--help)
+		-h)
 		echo "$LONG_USAGE"
 		exit
 	esac
 fi
 
+# Set the name of the end-user facing command in the reflog when the
+# script may update refs.  When GIT_REFLOG_ACTION is already set, this
+# will not overwrite it, so that a scripted Porcelain (e.g. "git
+# rebase") can set it to its own name (e.g. "rebase") and then call
+# another scripted Porcelain (e.g. "git am") and a call to this
+# function in the latter will keep the name of the end-user facing
+# program (e.g. "rebase") in GIT_REFLOG_ACTION, ensuring whatever it
+# does will be record as actions done as part of the end-user facing
+# operation (e.g. "rebase").
+#
+# NOTE NOTE NOTE: consequently, after assigning a specific message to
+# GIT_REFLOG_ACTION when calling a "git" command to record a custom
+# reflog message, do not leave that custom value in GIT_REFLOG_ACTION,
+# after you are done.  Other callers of "git" commands that rely on
+# writing the default "program name" in reflog expect the variable to
+# contain the value set by this function.
+#
+# To use a custom reflog message, do either one of these three:
+#
+# (a) use a single-shot export form:
+#     GIT_REFLOG_ACTION="$GIT_REFLOG_ACTION: preparing frotz" \
+#         git command-that-updates-a-ref
+#
+# (b) save the original away and restore:
+#     SAVED_ACTION=$GIT_REFLOG_ACTION
+#     GIT_REFLOG_ACTION="$GIT_REFLOG_ACTION: preparing frotz"
+#     git command-that-updates-a-ref
+#     GIT_REFLOG_ACITON=$SAVED_ACTION
+#
+# (c) assign the variable in a subshell:
+#     (
+#         GIT_REFLOG_ACTION="$GIT_REFLOG_ACTION: preparing frotz"
+#         git command-that-updates-a-ref
+#     )
 set_reflog_action() {
 	if [ -z "${GIT_REFLOG_ACTION:+set}" ]
 	then
@@ -114,18 +163,21 @@ git_pager() {
 	else
 		GIT_PAGER=cat
 	fi
-	: ${LESS=-FRSX}
-	export LESS
+	for vardef in @@PAGER_ENV@@
+	do
+		var=${vardef%%=*}
+		eval ": \"\${$vardef}\" && export $var"
+	done
 
 	eval "$GIT_PAGER" '"$@"'
 }
 
 sane_grep () {
-	GREP_OPTIONS= LC_ALL=C grep "$@"
+	GREP_OPTIONS= LC_ALL=C grep @@SANE_TEXT_GREP@@ "$@"
 }
 
 sane_egrep () {
-	GREP_OPTIONS= LC_ALL=C egrep "$@"
+	GREP_OPTIONS= LC_ALL=C egrep @@SANE_TEXT_GREP@@ "$@"
 }
 
 is_bare_repository () {
@@ -135,41 +187,126 @@ is_bare_repository () {
 cd_to_toplevel () {
 	cdup=$(git rev-parse --show-toplevel) &&
 	cd "$cdup" || {
-		echo >&2 "Cannot chdir to $cdup, the toplevel of the working tree"
+		gettextln "Cannot chdir to \$cdup, the toplevel of the working tree" >&2
 		exit 1
 	}
 }
 
-require_work_tree () {
-	test "$(git rev-parse --is-inside-work-tree 2>/dev/null)" = true ||
-	die "fatal: $0 cannot be used without a working tree."
+require_work_tree_exists () {
+	if test "z$(git rev-parse --is-bare-repository)" != zfalse
+	then
+		program_name=$0
+		die "$(eval_gettext "fatal: \$program_name cannot be used without a working tree.")"
+	fi
 }
 
-get_author_ident_from_commit () {
-	pick_author_script='
-	/^author /{
-		s/'\''/'\''\\'\'\''/g
-		h
-		s/^author \([^<]*\) <[^>]*> .*$/\1/
-		s/'\''/'\''\'\'\''/g
-		s/.*/GIT_AUTHOR_NAME='\''&'\''/p
-
-		g
-		s/^author [^<]* <\([^>]*\)> .*$/\1/
-		s/'\''/'\''\'\'\''/g
-		s/.*/GIT_AUTHOR_EMAIL='\''&'\''/p
-
-		g
-		s/^author [^<]* <[^>]*> \(.*\)$/\1/
-		s/'\''/'\''\'\'\''/g
-		s/.*/GIT_AUTHOR_DATE='\''&'\''/p
-
-		q
+require_work_tree () {
+	test "$(git rev-parse --is-inside-work-tree 2>/dev/null)" = true || {
+		program_name=$0
+		die "$(eval_gettext "fatal: \$program_name cannot be used without a working tree.")"
 	}
-	'
+}
+
+require_clean_work_tree () {
+	git rev-parse --verify HEAD >/dev/null || exit 1
+	git update-index -q --ignore-submodules --refresh
+	err=0
+
+	if ! git diff-files --quiet --ignore-submodules
+	then
+		action=$1
+		case "$action" in
+		rebase)
+			gettextln "Cannot rebase: You have unstaged changes." >&2
+			;;
+		"rewrite branches")
+			gettextln "Cannot rewrite branches: You have unstaged changes." >&2
+			;;
+		"pull with rebase")
+			gettextln "Cannot pull with rebase: You have unstaged changes." >&2
+			;;
+		*)
+			eval_gettextln "Cannot \$action: You have unstaged changes." >&2
+			;;
+		esac
+		err=1
+	fi
+
+	if ! git diff-index --cached --quiet --ignore-submodules HEAD --
+	then
+		if test $err = 0
+		then
+			action=$1
+			case "$action" in
+			rebase)
+				gettextln "Cannot rebase: Your index contains uncommitted changes." >&2
+				;;
+			"pull with rebase")
+				gettextln "Cannot pull with rebase: Your index contains uncommitted changes." >&2
+				;;
+			*)
+				eval_gettextln "Cannot \$action: Your index contains uncommitted changes." >&2
+				;;
+			esac
+		else
+		    gettextln "Additionally, your index contains uncommitted changes." >&2
+		fi
+		err=1
+	fi
+
+	if test $err = 1
+	then
+		test -n "$2" && echo "$2" >&2
+		exit 1
+	fi
+}
+
+# Generate a sed script to parse identities from a commit.
+#
+# Reads the commit from stdin, which should be in raw format (e.g., from
+# cat-file or "--pretty=raw").
+#
+# The first argument specifies the ident line to parse (e.g., "author"), and
+# the second specifies the environment variable to put it in (e.g., "AUTHOR"
+# for "GIT_AUTHOR_*"). Multiple pairs can be given to parse author and
+# committer.
+pick_ident_script () {
+	while test $# -gt 0
+	do
+		lid=$1; shift
+		uid=$1; shift
+		printf '%s' "
+		/^$lid /{
+			s/'/'\\\\''/g
+			h
+			s/^$lid "'\([^<]*\) <[^>]*> .*$/\1/'"
+			s/.*/GIT_${uid}_NAME='&'/p
+
+			g
+			s/^$lid "'[^<]* <\([^>]*\)> .*$/\1/'"
+			s/.*/GIT_${uid}_EMAIL='&'/p
+
+			g
+			s/^$lid "'[^<]* <[^>]*> \(.*\)$/@\1/'"
+			s/.*/GIT_${uid}_DATE='&'/p
+		}
+		"
+	done
+	echo '/^$/q'
+}
+
+# Create a pick-script as above and feed it to sed. Stdout is suitable for
+# feeding to eval.
+parse_ident_from_commit () {
+	LANG=C LC_ALL=C sed -ne "$(pick_ident_script "$@")"
+}
+
+# Parse the author from a commit given as an argument. Stdout is suitable for
+# feeding to eval to set the usual GIT_* ident variables.
+get_author_ident_from_commit () {
 	encoding=$(git config i18n.commitencoding || echo UTF-8)
 	git show -s --pretty=raw --encoding="$encoding" "$1" -- |
-	LANG=C LC_ALL=C sed -ne "$pick_author_script"
+	parse_ident_from_commit author AUTHOR
 }
 
 # Clear repo-local GIT_* environment variables. Useful when switching to
@@ -179,27 +316,20 @@ clear_local_git_env() {
 	unset $(git rev-parse --local-env-vars)
 }
 
-# Make sure we are in a valid repository of a vintage we understand,
-# if we require to be in a git repository.
-if test -z "$NONGIT_OK"
-then
-	GIT_DIR=$(git rev-parse --git-dir) || exit
-	if [ -z "$SUBDIRECTORY_OK" ]
-	then
-		test -z "$(git rev-parse --show-cdup)" || {
-			exit=$?
-			echo >&2 "You need to run this command from the toplevel of the working tree."
-			exit $exit
-		}
-	fi
-	test -n "$GIT_DIR" && GIT_DIR=$(cd "$GIT_DIR" && pwd) || {
-		echo >&2 "Unable to determine absolute path of git directory"
-		exit 1
-	}
-	: ${GIT_OBJECT_DIRECTORY="$GIT_DIR/objects"}
-fi
+# Generate a virtual base file for a two-file merge. Uses git apply to
+# remove lines from $1 that are not in $2, leaving only common lines.
+create_virtual_base() {
+	sz0=$(wc -c <"$1")
+	@@DIFF@@ -u -La/"$1" -Lb/"$1" "$1" "$2" | git apply --no-add
+	sz1=$(wc -c <"$1")
 
-# Fix some commands on Windows
+	# If we do not have enough common material, it is not
+	# worth trying two-file merge using common subsections.
+	expr $sz0 \< $sz1 \* 2 >/dev/null || : >"$1"
+}
+
+
+# Platform specific tweaks to work around some commands
 case $(uname -s) in
 *MINGW*)
 	# Windows has its own (incompatible) sort and find
@@ -209,5 +339,60 @@ case $(uname -s) in
 	find () {
 		/usr/bin/find "$@"
 	}
+	# git sees Windows-style pwd
+	pwd () {
+		builtin pwd -W
+	}
+	is_absolute_path () {
+		case "$1" in
+		[/\\]* | [A-Za-z]:*)
+			return 0 ;;
+		esac
+		return 1
+	}
 	;;
+*)
+	is_absolute_path () {
+		case "$1" in
+		/*)
+			return 0 ;;
+		esac
+		return 1
+	}
 esac
+
+# Make sure we are in a valid repository of a vintage we understand,
+# if we require to be in a git repository.
+git_dir_init () {
+	GIT_DIR=$(git rev-parse --git-dir) || exit
+	if [ -z "$SUBDIRECTORY_OK" ]
+	then
+		test -z "$(git rev-parse --show-cdup)" || {
+			exit=$?
+			gettextln "You need to run this command from the toplevel of the working tree." >&2
+			exit $exit
+		}
+	fi
+	test -n "$GIT_DIR" && GIT_DIR=$(cd "$GIT_DIR" && pwd) || {
+		gettextln "Unable to determine absolute path of git directory" >&2
+		exit 1
+	}
+	: "${GIT_OBJECT_DIRECTORY="$(git rev-parse --git-path objects)"}"
+}
+
+if test -z "$NONGIT_OK"
+then
+	git_dir_init
+fi
+
+peel_committish () {
+	case "$1" in
+	:/*)
+		peeltmp=$(git rev-parse --verify "$1") &&
+		git rev-parse --verify "${peeltmp}^0"
+		;;
+	*)
+		git rev-parse --verify "${1}^0"
+		;;
+	esac
+}

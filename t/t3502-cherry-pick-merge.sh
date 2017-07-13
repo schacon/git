@@ -31,11 +31,20 @@ test_expect_success setup '
 
 '
 
+test_expect_success 'cherry-pick -m complains of bogus numbers' '
+	# expect 129 here to distinguish between cases where
+	# there was nothing to cherry-pick
+	test_expect_code 129 git cherry-pick -m &&
+	test_expect_code 129 git cherry-pick -m foo b &&
+	test_expect_code 129 git cherry-pick -m -1 b &&
+	test_expect_code 129 git cherry-pick -m 0 b
+'
+
 test_expect_success 'cherry-pick a non-merge with -m should fail' '
 
 	git reset --hard &&
 	git checkout a^0 &&
-	test_must_fail git cherry-pick -m 1 b &&
+	test_expect_code 128 git cherry-pick -m 1 b &&
 	git diff --exit-code a --
 
 '

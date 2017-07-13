@@ -35,6 +35,11 @@ test_expect_success 'rebase with git am -3 (default)' '
 	test_must_fail git rebase master
 '
 
+test_expect_success 'rebase --skip can not be used with other options' '
+	test_must_fail git rebase -v --skip &&
+	test_must_fail git rebase --skip -v
+'
+
 test_expect_success 'rebase --skip with am -3' '
 	git rebase --skip
 	'
@@ -59,10 +64,11 @@ test_expect_success 'rebase with --merge' '
 
 test_expect_success 'rebase --skip with --merge' '
 	git rebase --skip
-	'
+'
 
-test_expect_success 'merge and reference trees equal' \
-	'test -z "`git diff-tree skip-merge skip-reference`"'
+test_expect_success 'merge and reference trees equal' '
+	test -z "$(git diff-tree skip-merge skip-reference)"
+'
 
 test_expect_success 'moved back to branch correctly' '
 	test refs/heads/skip-merge = $(git symbolic-ref HEAD)

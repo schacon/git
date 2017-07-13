@@ -12,16 +12,18 @@ SYNOPSIS
 'git update-index'
 	     [--add] [--remove | --force-remove] [--replace]
 	     [--refresh] [-q] [--unmerged] [--ignore-missing]
-	     [--cacheinfo <mode> <object> <file>]\*
+	     [(--cacheinfo <mode>,<object>,<file>)...]
 	     [--chmod=(+|-)x]
-	     [--assume-unchanged | --no-assume-unchanged]
-	     [--skip-worktree | --no-skip-worktree]
+	     [--[no-]assume-unchanged]
+	     [--[no-]skip-worktree]
 	     [--ignore-submodules]
+	     [--[no-]split-index]
+	     [--[no-|test-|force-]untracked-cache]
 	     [--really-refresh] [--unresolve] [--again | -g]
 	     [--info-only] [--index-info]
-	     [-z] [--stdin]
+	     [-z] [--stdin] [--index-version <n>]
 	     [--verbose]
-	     [--] [<file>]\*
+	     [--] [<file>...]
 
 DESCRIPTION
 -----------
@@ -68,8 +70,12 @@ OPTIONS
 --ignore-missing::
 	Ignores missing files during a --refresh
 
+--cacheinfo <mode>,<object>,<path>::
 --cacheinfo <mode> <object> <path>::
-	Directly insert the specified info into the index.
+	Directly insert the specified info into the index.  For
+	backward compatibility, you can also give these three
+	arguments as three separate parameters, but new users are
+	encouraged to use a single-parameter form.
 
 --index-info::
         Read index information from stdin.
@@ -77,33 +83,29 @@ OPTIONS
 --chmod=(+|-)x::
         Set the execute permissions on the updated files.
 
---assume-unchanged::
---no-assume-unchanged::
-	When these flags are specified, the object names recorded
-	for the paths are not updated.  Instead, these options
-	set and unset the "assume unchanged" bit for the
-	paths.  When the "assume unchanged" bit is on, git stops
-	checking the working tree files for possible
-	modifications, so you need to manually unset the bit to
-	tell git when you change the working tree file. This is
+--[no-]assume-unchanged::
+	When this flag is specified, the object names recorded
+	for the paths are not updated.  Instead, this option
+	sets/unsets the "assume unchanged" bit for the
+	paths.  When the "assume unchanged" bit is on, the user
+	promises not to change the file and allows Git to assume
+	that the working tree file matches what is recorded in
+	the index.  If you want to change the working tree file,
+	you need to unset the bit to tell Git.  This is
 	sometimes helpful when working with a big project on a
 	filesystem that has very slow lstat(2) system call
 	(e.g. cifs).
 +
-This option can be also used as a coarse file-level mechanism
-to ignore uncommitted changes in tracked files (akin to what
-`.gitignore` does for untracked files).
 Git will fail (gracefully) in case it needs to modify this file
 in the index e.g. when merging in a commit;
 thus, in case the assumed-untracked file is changed upstream,
 you will need to handle the situation manually.
 
 --really-refresh::
-	Like '--refresh', but checks stat information unconditionally,
+	Like `--refresh`, but checks stat information unconditionally,
 	without regard to the "assume unchanged" setting.
 
---skip-worktree::
---no-skip-worktree::
+--[no-]skip-worktree::
 	When one of these flags is specified, the object name recorded
 	for the paths are not updated. Instead, these options
 	set and unset the "skip-worktree" bit for the paths. See
@@ -143,9 +145,61 @@ you will need to handle the situation manually.
 --verbose::
         Report what is being added and removed from index.
 
+--index-version <n>::
+	Write the resulting index out in the named on-disk format version.
+	Supported versions are 2, 3 and 4. The current default version is 2
+	or 3, depending on whether extra features are used, such as
+	`git add -N`.
++
+Version 4 performs a simple pathname compression that reduces index
+size by 30%-50% on large repositories, which results in faster load
+time. Version 4 is relatively young (first released in in 1.8.0 in
+October 2012). Other Git implementations such as JGit and libgit2
+may not support it yet.
+
 -z::
-	Only meaningful with `--stdin`; paths are separated with
-	NUL character instead of LF.
+	Only meaningful with `--stdin` or `--index-info`; paths are
+	separated with NUL character instead of LF.
+
+--split-index::
+--no-split-index::
+	Enable or disable split index mode. If split-index mode is
+	already enabled and `--split-index` is given again, all
+	changes in $GIT_DIR/index are pushed back to the shared index
+	file.
++
+These options take effect whatever the value of the `core.splitIndex`
+configuration variable (see linkgit:git-config[1]). But a warning is
+emitted when the change goes against the configured value, as the
+configured value will take effect next time the index is read and this
+will remove the intended effect of the option.
+
+--untracked-cache::
+--no-untracked-cache::
+	Enable or disable untracked cache feature. Please use
+	`--test-untracked-cache` before enabling it.
++
+These options take effect whatever the value of the `core.untrackedCache`
+configuration variable (see linkgit:git-config[1]). But a warning is
+emitted when the change goes against the configured value, as the
+configured value will take effect next time the index is read and this
+will remove the intended effect of the option.
+
+--test-untracked-cache::
+	Only perform tests on the working directory to make sure
+	untracked cache can be used. You have to manually enable
+	untracked cache using `--untracked-cache` or
+	`--force-untracked-cache` or the `core.untrackedCache`
+	configuration variable afterwards if you really want to use
+	it. If a test fails the exit code is 1 and a message
+	explains what is not working as needed, otherwise the exit
+	code is 0 and OK is printed.
+
+--force-untracked-cache::
+	Same as `--untracked-cache`. Provided for backwards
+	compatibility with older versions of Git where
+	`--untracked-cache` used to imply `--test-untracked-cache` but
+	this option would enable the extension unconditionally.
 
 \--::
 	Do not interpret any more arguments as options.
@@ -159,7 +213,7 @@ you will need to handle the situation manually.
 
 Using --refresh
 ---------------
-'--refresh' does not calculate a new sha1 file or bring the index
+`--refresh` does not calculate a new sha1 file or bring the index
 up-to-date for mode/content changes. But what it *does* do is to
 "re-match" the stat information of a file with the index, so that you
 can refresh the index for a file that hasn't been changed but where
@@ -170,22 +224,22 @@ up the stat index details with the proper files.
 
 Using --cacheinfo or --info-only
 --------------------------------
-'--cacheinfo' is used to register a file that is not in the
+`--cacheinfo` is used to register a file that is not in the
 current working directory.  This is useful for minimum-checkout
 merging.
 
 To pretend you have a file with mode and sha1 at path, say:
 
 ----------------
-$ git update-index --cacheinfo mode sha1 path
+$ git update-index --cacheinfo <mode>,<sha1>,<path>
 ----------------
 
-'--info-only' is used to register files without placing them in the object
+`--info-only` is used to register files without placing them in the object
 database.  This is useful for status-only repositories.
 
-Both '--cacheinfo' and '--info-only' behave similarly: the index is updated
-but the object database isn't.  '--cacheinfo' is useful when the object is
-in the database but the file isn't available locally.  '--info-only' is
+Both `--cacheinfo` and `--info-only` behave similarly: the index is updated
+but the object database isn't.  `--cacheinfo` is useful when the object is
+in the database but the file isn't available locally.  `--info-only` is
 useful when the file is available, but you do not wish to update the
 object database.
 
@@ -235,7 +289,7 @@ $ git update-index --index-info
 ------------
 
 The first line of the input feeds 0 as the mode to remove the
-path; the SHA1 does not matter as long as it is well formatted.
+path; the SHA-1 does not matter as long as it is well formatted.
 Then the second and third line feeds stage 1 and stage 2 entries
 for that path.  After the above, we would end up with this:
 
@@ -249,26 +303,28 @@ $ git ls-files -s
 Using ``assume unchanged'' bit
 ------------------------------
 
-Many operations in git depend on your filesystem to have an
+Many operations in Git depend on your filesystem to have an
 efficient `lstat(2)` implementation, so that `st_mtime`
 information for working tree files can be cheaply checked to see
 if the file contents have changed from the version recorded in
 the index file.  Unfortunately, some filesystems have
 inefficient `lstat(2)`.  If your filesystem is one of them, you
 can set "assume unchanged" bit to paths you have not changed to
-cause git not to do this check.  Note that setting this bit on a
-path does not mean git will check the contents of the file to
-see if it has changed -- it makes git to omit any checking and
+cause Git not to do this check.  Note that setting this bit on a
+path does not mean Git will check the contents of the file to
+see if it has changed -- it makes Git to omit any checking and
 assume it has *not* changed.  When you make changes to working
-tree files, you have to explicitly tell git about it by dropping
+tree files, you have to explicitly tell Git about it by dropping
 "assume unchanged" bit, either before or after you modify them.
 
 In order to set "assume unchanged" bit, use `--assume-unchanged`
-option.  To unset, use `--no-assume-unchanged`.
+option.  To unset, use `--no-assume-unchanged`. To see which files
+have the "assume unchanged" bit set, use `git ls-files -v`
+(see linkgit:git-ls-files[1]).
 
 The command looks at `core.ignorestat` configuration variable.  When
 this is true, paths updated with `git update-index paths...` and
-paths updated with other git commands that update both index and
+paths updated with other Git commands that update both index and
 working tree (e.g. 'git apply --index', 'git checkout-index -u',
 and 'git read-tree -u') are automatically marked as "assume
 unchanged".  Note that "assume unchanged" bit is *not* set if
@@ -334,6 +390,62 @@ Although this bit looks similar to assume-unchanged bit, its goal is
 different from assume-unchanged bit's. Skip-worktree also takes
 precedence over assume-unchanged bit when both are set.
 
+Split index
+-----------
+
+This mode is designed for repositories with very large indexes, and
+aims at reducing the time it takes to repeatedly write these indexes.
+
+In this mode, the index is split into two files, $GIT_DIR/index and
+$GIT_DIR/sharedindex.<SHA-1>. Changes are accumulated in
+$GIT_DIR/index, the split index, while the shared index file contains
+all index entries and stays unchanged.
+
+All changes in the split index are pushed back to the shared index
+file when the number of entries in the split index reaches a level
+specified by the splitIndex.maxPercentChange config variable (see
+linkgit:git-config[1]).
+
+Each time a new shared index file is created, the old shared index
+files are deleted if their modification time is older than what is
+specified by the splitIndex.sharedIndexExpire config variable (see
+linkgit:git-config[1]).
+
+To avoid deleting a shared index file that is still used, its
+modification time is updated to the current time everytime a new split
+index based on the shared index file is either created or read from.
+
+Untracked cache
+---------------
+
+This cache is meant to speed up commands that involve determining
+untracked files such as `git status`.
+
+This feature works by recording the mtime of the working tree
+directories and then omitting reading directories and stat calls
+against files in those directories whose mtime hasn't changed. For
+this to work the underlying operating system and file system must
+change the `st_mtime` field of directories if files in the directory
+are added, modified or deleted.
+
+You can test whether the filesystem supports that with the
+`--test-untracked-cache` option. The `--untracked-cache` option used
+to implicitly perform that test in older versions of Git, but that's
+no longer the case.
+
+If you want to enable (or disable) this feature, it is easier to use
+the `core.untrackedCache` configuration variable (see
+linkgit:git-config[1]) than using the `--untracked-cache` option to
+`git update-index` in each repository, especially if you want to do so
+across all repositories you use, because you can set the configuration
+variable to `true` (or `false`) in your `$HOME/.gitconfig` just once
+and have it affect all repositories you touch.
+
+When the `core.untrackedCache` configuration variable is changed, the
+untracked cache is added to or removed from the index the next time a
+command reads the index; while when `--[no-|force-]untracked-cache`
+are used, the untracked cache is immediately added to or removed from
+the index.
 
 Configuration
 -------------
@@ -359,20 +471,15 @@ It can be useful when the inode change time is regularly modified by
 something outside Git (file system crawlers and backup systems use
 ctime for marking files processed) (see linkgit:git-config[1]).
 
+The untracked cache extension can be enabled by the
+`core.untrackedCache` configuration variable (see
+linkgit:git-config[1]).
 
 SEE ALSO
 --------
 linkgit:git-config[1],
-linkgit:git-add[1]
-
-
-Author
-------
-Written by Linus Torvalds <torvalds@osdl.org>
-
-Documentation
---------------
-Documentation by David Greaves, Junio C Hamano and the git-list <git@vger.kernel.org>.
+linkgit:git-add[1],
+linkgit:git-ls-files[1]
 
 GIT
 ---

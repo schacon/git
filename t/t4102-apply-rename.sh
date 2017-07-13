@@ -31,13 +31,6 @@ test_expect_success setup \
 test_expect_success apply \
     'git apply --index --stat --summary --apply test-patch'
 
-if test "$(git config --bool core.filemode)" = false
-then
-	say 'filemode disabled on the filesystem'
-else
-	test_set_prereq FILEMODE
-fi
-
 test_expect_success FILEMODE validate \
 	    'test -f bar && ls -l bar | grep "^-..x......"'
 
@@ -59,6 +52,6 @@ EOF
 
 test_expect_success 'apply copy' \
     'git apply --index --stat --summary --apply test-patch &&
-     test "$(cat bar)" = "This is bar" -a "$(cat foo)" = "This is foo"'
+     test "$(cat bar)" = "This is bar" && test "$(cat foo)" = "This is foo"'
 
 test_done

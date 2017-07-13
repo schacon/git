@@ -3,54 +3,23 @@
  *
  * Copyright (C) 2005 Linus Torvalds
  *
- * Careful: order of argument flags does matter. For example,
- *
- *	git checkout-index -a -f file.c
- *
- * Will first check out all files listed in the cache (but not
- * overwrite any old ones), and then force-checkout "file.c" a
- * second time (ie that one _will_ overwrite any old contents
- * with the same filename).
- *
- * Also, just doing "git checkout-index" does nothing. You probably
- * meant "git checkout-index -a". And if you want to force it, you
- * want "git checkout-index -f -a".
- *
- * Intuitiveness is not the goal here. Repeatability is. The
- * reason for the "no arguments means no work" thing is that
- * from scripts you are supposed to be able to do things like
- *
- *	find . -name '*.h' -print0 | xargs -0 git checkout-index -f --
- *
- * or:
- *
- *	find . -name '*.h' -print0 | git checkout-index -f -z --stdin
- *
- * which will force all existing *.h files to be replaced with
- * their cached copies. If an empty command line implied "all",
- * then this would force-refresh everything in the cache, which
- * was not the point.
- *
- * Oh, and the "--" is just a good idea when you know the rest
- * will be filenames. Just so that you wouldn't have a filename
- * of "-a" causing problems (not possible in the above example,
- * but get used to it in scripting!).
  */
 #include "builtin.h"
-#include "cache.h"
+#include "config.h"
+#include "lockfile.h"
 #include "quote.h"
 #include "cache-tree.h"
 #include "parse-options.h"
 
 #define CHECKOUT_ALL 4
-static int line_termination = '\n';
+static int nul_term_line;
 static int checkout_stage; /* default to checkout stage0 */
 static int to_tempfile;
-static char topath[4][PATH_MAX + 1];
+static char topath[4][TEMPORARY_FILENAME_LENGTH + 1];
 
-static struct checkout state;
+static struct checkout state = CHECKOUT_INIT;
 
-static void write_tempfile_record(const char *name, int prefix_length)
+static void write_tempfile_record(const char *name, const char *prefix)
 {
 	int i;
 
@@ -67,14 +36,15 @@ static void write_tempfile_record(const char *name, int prefix_length)
 		fputs(topath[checkout_stage], stdout);
 
 	putchar('\t');
-	write_name_quoted(name + prefix_length, stdout, line_termination);
+	write_name_quoted_relative(name, prefix, stdout,
+				   nul_term_line ? '\0' : '\n');
 
 	for (i = 0; i < 4; i++) {
 		topath[i][0] = 0;
 	}
 }
 
-static int checkout_file(const char *name, int prefix_length)
+static int checkout_file(const char *name, const char *prefix)
 {
 	int namelen = strlen(name);
 	int pos = cache_name_pos(name, namelen);
@@ -103,7 +73,7 @@ static int checkout_file(const char *name, int prefix_length)
 
 	if (did_checkout) {
 		if (to_tempfile)
-			write_tempfile_record(name, prefix_length);
+			write_tempfile_record(name, prefix);
 		return errs > 0 ? -1 : 0;
 	}
 
@@ -138,7 +108,7 @@ static void checkout_all(const char *prefix, int prefix_length)
 		if (last_ce && to_tempfile) {
 			if (ce_namelen(last_ce) != ce_namelen(ce)
 			    || memcmp(last_ce->name, ce->name, ce_namelen(ce)))
-				write_tempfile_record(last_ce->name, prefix_length);
+				write_tempfile_record(last_ce->name, prefix);
 		}
 		if (checkout_entry(ce, &state,
 		    to_tempfile ? topath[ce_stage(ce)] : NULL) < 0)
@@ -146,7 +116,7 @@ static void checkout_all(const char *prefix, int prefix_length)
 		last_ce = ce;
 	}
 	if (last_ce && to_tempfile)
-		write_tempfile_record(last_ce->name, prefix_length);
+		write_tempfile_record(last_ce->name, prefix);
 	if (errs)
 		/* we have already done our error reporting.
 		 * exit with the same code as die().
@@ -155,40 +125,11 @@ static void checkout_all(const char *prefix, int prefix_length)
 }
 
 static const char * const builtin_checkout_index_usage[] = {
-	"git checkout-index [options] [--] <file>...",
+	N_("git checkout-index [<options>] [--] [<file>...]"),
 	NULL
 };
 
 static struct lock_file lock_file;
-
-static int option_parse_u(const struct option *opt,
-			      const char *arg, int unset)
-{
-	int *newfd = opt->value;
-
-	state.refresh_cache = 1;
-	if (*newfd < 0)
-		*newfd = hold_locked_index(&lock_file, 1);
-	return 0;
-}
-
-static int option_parse_z(const struct option *opt,
-			  const char *arg, int unset)
-{
-	if (unset)
-		line_termination = '\n';
-	else
-		line_termination = 0;
-	return 0;
-}
-
-static int option_parse_prefix(const struct option *opt,
-			       const char *arg, int unset)
-{
-	state.base_dir = arg;
-	state.base_dir_len = strlen(arg);
-	return 0;
-}
 
 static int option_parse_stage(const struct option *opt,
 			      const char *arg, int unset)
@@ -201,7 +142,7 @@ static int option_parse_stage(const struct option *opt,
 		if ('1' <= ch && ch <= '3')
 			checkout_stage = arg[0] - '0';
 		else
-			die("stage should be between 1 and 3 or all");
+			die(_("stage should be between 1 and 3 or all"));
 	}
 	return 0;
 }
@@ -214,35 +155,35 @@ int cmd_checkout_index(int argc, const char **argv, const char *prefix)
 	int read_from_stdin = 0;
 	int prefix_length;
 	int force = 0, quiet = 0, not_new = 0;
+	int index_opt = 0;
 	struct option builtin_checkout_index_options[] = {
-		OPT_BOOLEAN('a', "all", &all,
-			"checks out all files in the index"),
-		OPT_BOOLEAN('f', "force", &force,
-			"forces overwrite of existing files"),
-		OPT__QUIET(&quiet),
-		OPT_BOOLEAN('n', "no-create", &not_new,
-			"don't checkout new files"),
-		{ OPTION_CALLBACK, 'u', "index", &newfd, NULL,
-			"update stat information in the index file",
-			PARSE_OPT_NOARG, option_parse_u },
-		{ OPTION_CALLBACK, 'z', NULL, NULL, NULL,
-			"paths are separated with NUL character",
-			PARSE_OPT_NOARG, option_parse_z },
-		OPT_BOOLEAN(0, "stdin", &read_from_stdin,
-			"read list of paths from the standard input"),
-		OPT_BOOLEAN(0, "temp", &to_tempfile,
-			"write the content to temporary files"),
-		OPT_CALLBACK(0, "prefix", NULL, "string",
-			"when creating files, prepend <string>",
-			option_parse_prefix),
-		OPT_CALLBACK(0, "stage", NULL, NULL,
-			"copy out the files from named stage",
-			option_parse_stage),
+		OPT_BOOL('a', "all", &all,
+			N_("check out all files in the index")),
+		OPT__FORCE(&force, N_("force overwrite of existing files")),
+		OPT__QUIET(&quiet,
+			N_("no warning for existing files and files not in index")),
+		OPT_BOOL('n', "no-create", &not_new,
+			N_("don't checkout new files")),
+		OPT_BOOL('u', "index", &index_opt,
+			 N_("update stat information in the index file")),
+		OPT_BOOL('z', NULL, &nul_term_line,
+			N_("paths are separated with NUL character")),
+		OPT_BOOL(0, "stdin", &read_from_stdin,
+			N_("read list of paths from the standard input")),
+		OPT_BOOL(0, "temp", &to_tempfile,
+			N_("write the content to temporary files")),
+		OPT_STRING(0, "prefix", &state.base_dir, N_("string"),
+			N_("when creating files, prepend <string>")),
+		{ OPTION_CALLBACK, 0, "stage", NULL, "1-3|all",
+			N_("copy out the files from named stage"),
+			PARSE_OPT_NONEG, option_parse_stage },
 		OPT_END()
 	};
 
+	if (argc == 2 && !strcmp(argv[1], "-h"))
+		usage_with_options(builtin_checkout_index_usage,
+				   builtin_checkout_index_options);
 	git_config(git_default_config, NULL);
-	state.base_dir = "";
 	prefix_length = prefix ? strlen(prefix) : 0;
 
 	if (read_cache() < 0) {
@@ -255,52 +196,55 @@ int cmd_checkout_index(int argc, const char **argv, const char *prefix)
 	state.quiet = quiet;
 	state.not_new = not_new;
 
-	if (state.base_dir_len || to_tempfile) {
-		/* when --prefix is specified we do not
-		 * want to update cache.
-		 */
-		if (state.refresh_cache) {
-			rollback_lock_file(&lock_file);
-			newfd = -1;
-		}
-		state.refresh_cache = 0;
+	if (!state.base_dir)
+		state.base_dir = "";
+	state.base_dir_len = strlen(state.base_dir);
+
+	/*
+	 * when --prefix is specified we do not want to update cache.
+	 */
+	if (index_opt && !state.base_dir_len && !to_tempfile) {
+		state.refresh_cache = 1;
+		state.istate = &the_index;
+		newfd = hold_locked_index(&lock_file, LOCK_DIE_ON_ERROR);
 	}
 
 	/* Check out named files first */
 	for (i = 0; i < argc; i++) {
 		const char *arg = argv[i];
-		const char *p;
+		char *p;
 
 		if (all)
 			die("git checkout-index: don't mix '--all' and explicit filenames");
 		if (read_from_stdin)
 			die("git checkout-index: don't mix '--stdin' and explicit filenames");
 		p = prefix_path(prefix, prefix_length, arg);
-		checkout_file(p, prefix_length);
-		if (p < arg || p > arg + strlen(arg))
-			free((char *)p);
+		checkout_file(p, prefix);
+		free(p);
 	}
 
 	if (read_from_stdin) {
-		struct strbuf buf = STRBUF_INIT, nbuf = STRBUF_INIT;
+		struct strbuf buf = STRBUF_INIT;
+		struct strbuf unquoted = STRBUF_INIT;
+		strbuf_getline_fn getline_fn;
 
 		if (all)
 			die("git checkout-index: don't mix '--all' and '--stdin'");
 
-		while (strbuf_getline(&buf, stdin, line_termination) != EOF) {
-			const char *p;
-			if (line_termination && buf.buf[0] == '"') {
-				strbuf_reset(&nbuf);
-				if (unquote_c_style(&nbuf, buf.buf, NULL))
+		getline_fn = nul_term_line ? strbuf_getline_nul : strbuf_getline_lf;
+		while (getline_fn(&buf, stdin) != EOF) {
+			char *p;
+			if (!nul_term_line && buf.buf[0] == '"') {
+				strbuf_reset(&unquoted);
+				if (unquote_c_style(&unquoted, buf.buf, NULL))
 					die("line is badly quoted");
-				strbuf_swap(&buf, &nbuf);
+				strbuf_swap(&buf, &unquoted);
 			}
 			p = prefix_path(prefix, prefix_length, buf.buf);
-			checkout_file(p, prefix_length);
-			if (p < buf.buf || p > buf.buf + buf.len)
-				free((char *)p);
+			checkout_file(p, prefix);
+			free(p);
 		}
-		strbuf_release(&nbuf);
+		strbuf_release(&unquoted);
 		strbuf_release(&buf);
 	}
 
@@ -308,8 +252,7 @@ int cmd_checkout_index(int argc, const char **argv, const char *prefix)
 		checkout_all(prefix, prefix_length);
 
 	if (0 <= newfd &&
-	    (write_cache(newfd, active_cache, active_nr) ||
-	     commit_locked_index(&lock_file)))
+	    write_locked_index(&the_index, &lock_file, COMMIT_LOCK))
 		die("Unable to write new index file");
 	return 0;
 }

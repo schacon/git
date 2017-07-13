@@ -12,8 +12,7 @@ SYNOPSIS
 		[--current] [--color[=<when>] | --no-color] [--sparse]
 		[--more=<n> | --list | --independent | --merge-base]
 		[--no-name | --sha1-name] [--topics]
-		[<rev> | <glob>]...
-
+		[(<rev> | <glob>)...]
 'git show-branch' (-g|--reflog)[=<n>[,<base>]] [--list] [<ref>]
 
 DESCRIPTION
@@ -26,13 +25,13 @@ and/or refs/tags) semi-visually.
 It cannot show more than 29 branches and commits at a time.
 
 It uses `showbranch.default` multi-valued configuration items if
-no <rev> nor <glob> is given on the command line.
+no <rev> or <glob> is given on the command line.
 
 
 OPTIONS
 -------
 <rev>::
-	Arbitrary extended SHA1 expression (see linkgit:git-rev-parse[1])
+	Arbitrary extended SHA-1 expression (see linkgit:gitrevisions[7])
 	that typically names a branch head or a tag.
 
 <glob>::
@@ -61,7 +60,7 @@ OPTIONS
         are shown before their parents).
 
 --date-order::
-	This option is similar to '--topo-order' in the sense that no
+	This option is similar to `--topo-order` in the sense that no
 	parent comes before all of its children, but otherwise commits
 	are ordered according to their commit date.
 
@@ -143,7 +142,7 @@ displayed, indented N places.  If a commit is on the I-th
 branch, the I-th indentation character shows a `+` sign;
 otherwise it shows a space.  Merge commits are denoted by
 a `-` sign.  Each commit shows a short name that
-can be used as an extended SHA1 to name that commit.
+can be used as an extended SHA-1 to name that commit.
 
 The following example shows three branches, "master", "fixes"
 and "mhf":
@@ -168,10 +167,10 @@ $ git show-branch master fixes mhf
 ------------------------------------------------
 
 These three branches all forked from a common commit, [master],
-whose commit message is "Add \'git show-branch\'". The "fixes"
-branch adds one commit "Introduce "reset type" flag to "git reset"".
-The "mhf" branch adds many other commits. The current branch
-is "master".
+whose commit message is "Add {apostrophe}git show-branch{apostrophe}".
+The "fixes" branch adds one commit "Introduce "reset type" flag to
+"git reset"". The "mhf" branch adds many other commits.
+The current branch is "master".
 
 
 EXAMPLE
@@ -199,17 +198,6 @@ $ git show-branch --reflog="10,1 hour ago" --list master
 shows 10 reflog entries going back from the tip as of 1 hour ago.
 Without `--list`, the output also shows how these tips are
 topologically related with each other.
-
-
-Author
-------
-Written by Junio C Hamano <gitster@pobox.com>
-
-
-Documentation
---------------
-Documentation by Junio C Hamano.
-
 
 GIT
 ---

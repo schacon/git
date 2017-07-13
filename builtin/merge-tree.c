@@ -1,18 +1,17 @@
-#include "cache.h"
+#include "builtin.h"
 #include "tree-walk.h"
 #include "xdiff-interface.h"
 #include "blob.h"
 #include "exec_cmd.h"
+#include "merge-blobs.h"
 
 static const char merge_tree_usage[] = "git merge-tree <base-tree> <branch1> <branch2>";
-static int resolve_directories = 1;
 
 struct merge_list {
 	struct merge_list *next;
 	struct merge_list *link;	/* other stages for this object */
 
-	unsigned int stage : 2,
-		     flags : 30;
+	unsigned int stage : 2;
 	unsigned int mode;
 	const char *path;
 	struct blob *blob;
@@ -54,15 +53,14 @@ static const char *explanation(struct merge_list *entry)
 	return "removed in remote";
 }
 
-extern void *merge_file(const char *, struct blob *, struct blob *, struct blob *, unsigned long *);
-
 static void *result(struct merge_list *entry, unsigned long *size)
 {
 	enum object_type type;
 	struct blob *base, *our, *their;
+	const char *path = entry->path;
 
 	if (!entry->stage)
-		return read_sha1_file(entry->blob->object.sha1, &type, size);
+		return read_sha1_file(entry->blob->object.oid.hash, &type, size);
 	base = NULL;
 	if (entry->stage == 1) {
 		base = entry->blob;
@@ -76,7 +74,7 @@ static void *result(struct merge_list *entry, unsigned long *size)
 	their = NULL;
 	if (entry)
 		their = entry->blob;
-	return merge_file(entry->path, base, our, their, size);
+	return merge_blobs(path, base, our, their, size);
 }
 
 static void *origin(struct merge_list *entry, unsigned long *size)
@@ -84,7 +82,7 @@ static void *origin(struct merge_list *entry, unsigned long *size)
 	enum object_type type;
 	while (entry) {
 		if (entry->stage == 2)
-			return read_sha1_file(entry->blob->object.sha1, &type, size);
+			return read_sha1_file(entry->blob->object.oid.hash, &type, size);
 		entry = entry->link;
 	}
 	return NULL;
@@ -120,7 +118,8 @@ static void show_diff(struct merge_list *entry)
 	if (!dst.ptr)
 		size = 0;
 	dst.size = size;
-	xdi_diff(&src, &dst, &xpp, &xecfg, &ecb);
+	if (xdi_diff(&src, &dst, &xpp, &xecfg, &ecb))
+		die("unable to generate diff");
 	free(src.ptr);
 	free(dst.ptr);
 }
@@ -131,7 +130,7 @@ static void show_result_list(struct merge_list *entry)
 	do {
 		struct merge_list *link = entry->link;
 		static const char *desc[4] = { "result", "base", "our", "their" };
-		printf("  %-6s %o %s %s\n", desc[entry->stage], entry->mode, sha1_to_hex(entry->blob->object.sha1), entry->path);
+		printf("  %-6s %o %s %s\n", desc[entry->stage], entry->mode, oid_to_hex(&entry->blob->object.oid), entry->path);
 		entry = link;
 	} while (entry);
 }
@@ -151,75 +150,81 @@ static void show_result(void)
 /* An empty entry never compares same, not even to another empty entry */
 static int same_entry(struct name_entry *a, struct name_entry *b)
 {
-	return	a->sha1 &&
-		b->sha1 &&
-		!hashcmp(a->sha1, b->sha1) &&
+	return	a->oid &&
+		b->oid &&
+		!oidcmp(a->oid, b->oid) &&
 		a->mode == b->mode;
 }
 
-static struct merge_list *create_entry(unsigned stage, unsigned mode, const unsigned char *sha1, const char *path)
+static int both_empty(struct name_entry *a, struct name_entry *b)
+{
+	return !(a->oid || b->oid);
+}
+
+static struct merge_list *create_entry(unsigned stage, unsigned mode, const struct object_id *oid, const char *path)
 {
 	struct merge_list *res = xcalloc(1, sizeof(*res));
 
 	res->stage = stage;
 	res->path = path;
 	res->mode = mode;
-	res->blob = lookup_blob(sha1);
+	res->blob = lookup_blob(oid);
 	return res;
 }
 
 static char *traverse_path(const struct traverse_info *info, const struct name_entry *n)
 {
-	char *path = xmalloc(traverse_path_len(info, n) + 1);
+	char *path = xmallocz(traverse_path_len(info, n));
 	return make_traverse_path(path, info, n);
 }
 
-static void resolve(const struct traverse_info *info, struct name_entry *branch1, struct name_entry *result)
+static void resolve(const struct traverse_info *info, struct name_entry *ours, struct name_entry *result)
 {
 	struct merge_list *orig, *final;
 	const char *path;
 
-	/* If it's already branch1, don't bother showing it */
-	if (!branch1)
+	/* If it's already ours, don't bother showing it */
+	if (!ours)
 		return;
 
 	path = traverse_path(info, result);
-	orig = create_entry(2, branch1->mode, branch1->sha1, path);
-	final = create_entry(0, result->mode, result->sha1, path);
+	orig = create_entry(2, ours->mode, ours->oid, path);
+	final = create_entry(0, result->mode, result->oid, path);
 
 	final->link = orig;
 
 	add_merge_entry(final);
 }
 
-static int unresolved_directory(const struct traverse_info *info, struct name_entry n[3])
+static void unresolved_directory(const struct traverse_info *info,
+				 struct name_entry n[3])
 {
 	char *newbase;
 	struct name_entry *p;
 	struct tree_desc t[3];
 	void *buf0, *buf1, *buf2;
 
-	if (!resolve_directories)
-		return 0;
-	p = n;
-	if (!p->mode) {
-		p++;
-		if (!p->mode)
-			p++;
+	for (p = n; p < n + 3; p++) {
+		if (p->mode && S_ISDIR(p->mode))
+			break;
 	}
-	if (!S_ISDIR(p->mode))
-		return 0;
+	if (n + 3 <= p)
+		return; /* there is no tree here */
+
 	newbase = traverse_path(info, p);
-	buf0 = fill_tree_descriptor(t+0, n[0].sha1);
-	buf1 = fill_tree_descriptor(t+1, n[1].sha1);
-	buf2 = fill_tree_descriptor(t+2, n[2].sha1);
+
+#define ENTRY_SHA1(e) (((e)->mode && S_ISDIR((e)->mode)) ? (e)->oid->hash : NULL)
+	buf0 = fill_tree_descriptor(t+0, ENTRY_SHA1(n + 0));
+	buf1 = fill_tree_descriptor(t+1, ENTRY_SHA1(n + 1));
+	buf2 = fill_tree_descriptor(t+2, ENTRY_SHA1(n + 2));
+#undef ENTRY_SHA1
+
 	merge_trees(t, newbase);
 
 	free(buf0);
 	free(buf1);
 	free(buf2);
 	free(newbase);
-	return 1;
 }
 
 
@@ -234,7 +239,7 @@ static struct merge_list *link_entry(unsigned stage, const struct traverse_info 
 		path = entry->path;
 	else
 		path = traverse_path(info, n);
-	link = create_entry(stage, n->mode, n->sha1, path);
+	link = create_entry(stage, n->mode, n->oid, path);
 	link->link = entry;
 	return link;
 }
@@ -242,18 +247,30 @@ static struct merge_list *link_entry(unsigned stage, const struct traverse_info 
 static void unresolved(const struct traverse_info *info, struct name_entry n[3])
 {
 	struct merge_list *entry = NULL;
+	int i;
+	unsigned dirmask = 0, mask = 0;
 
-	if (unresolved_directory(info, n))
+	for (i = 0; i < 3; i++) {
+		mask |= (1 << i);
+		/*
+		 * Treat missing entries as directories so that we return
+		 * after unresolved_directory has handled this.
+		 */
+		if (!n[i].mode || S_ISDIR(n[i].mode))
+			dirmask |= (1 << i);
+	}
+
+	unresolved_directory(info, n);
+
+	if (dirmask == mask)
 		return;
 
-	/*
-	 * Do them in reverse order so that the resulting link
-	 * list has the stages in order - link_entry adds new
-	 * links at the front.
-	 */
-	entry = link_entry(3, info, n + 2, entry);
-	entry = link_entry(2, info, n + 1, entry);
-	entry = link_entry(1, info, n + 0, entry);
+	if (n[2].mode && !S_ISDIR(n[2].mode))
+		entry = link_entry(3, info, n + 2, entry);
+	if (n[1].mode && !S_ISDIR(n[1].mode))
+		entry = link_entry(2, info, n + 1, entry);
+	if (n[0].mode && !S_ISDIR(n[0].mode))
+		entry = link_entry(1, info, n + 0, entry);
 
 	add_merge_entry(entry);
 }
@@ -290,25 +307,29 @@ static void unresolved(const struct traverse_info *info, struct name_entry n[3])
 static int threeway_callback(int n, unsigned long mask, unsigned long dirmask, struct name_entry *entry, struct traverse_info *info)
 {
 	/* Same in both? */
-	if (same_entry(entry+1, entry+2)) {
-		if (entry[0].sha1) {
-			resolve(info, NULL, entry+1);
-			return mask;
-		}
+	if (same_entry(entry+1, entry+2) || both_empty(entry+1, entry+2)) {
+		/* Modified, added or removed identically */
+		resolve(info, NULL, entry+1);
+		return mask;
 	}
 
 	if (same_entry(entry+0, entry+1)) {
-		if (entry[2].sha1 && !S_ISDIR(entry[2].mode)) {
+		if (entry[2].oid && !S_ISDIR(entry[2].mode)) {
+			/* We did not touch, they modified -- take theirs */
 			resolve(info, entry+1, entry+2);
 			return mask;
 		}
+		/*
+		 * If we did not touch a directory but they made it
+		 * into a file, we fall through and unresolved()
+		 * recurses down.  Likewise for the opposite case.
+		 */
 	}
 
-	if (same_entry(entry+0, entry+2)) {
-		if (entry[1].sha1 && !S_ISDIR(entry[1].mode)) {
-			resolve(info, NULL, entry+1);
-			return mask;
-		}
+	if (same_entry(entry+0, entry+2) || both_empty(entry+0, entry+2)) {
+		/* We added, modified or removed, they did not touch -- take ours */
+		resolve(info, NULL, entry+1);
+		return mask;
 	}
 
 	unresolved(info, entry);

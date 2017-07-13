@@ -2,9 +2,14 @@
 
 test_description='push with --set-upstream'
 . ./test-lib.sh
+. "$TEST_DIRECTORY"/lib-terminal.sh
+
+ensure_fresh_upstream() {
+	rm -rf parent && git init --bare parent
+}
 
 test_expect_success 'setup bare parent' '
-	git init --bare parent &&
+	ensure_fresh_upstream &&
 	git remote add upstream parent
 '
 
@@ -64,6 +69,51 @@ test_expect_success 'push -u HEAD' '
 	git checkout -b headbranch &&
 	git push -u upstream HEAD &&
 	check_config headbranch upstream refs/heads/headbranch
+'
+
+test_expect_success TTY 'progress messages go to tty' '
+	ensure_fresh_upstream &&
+
+	test_terminal git push -u upstream master >out 2>err &&
+	test_i18ngrep "Writing objects" err
+'
+
+test_expect_success 'progress messages do not go to non-tty' '
+	ensure_fresh_upstream &&
+
+	# skip progress messages, since stderr is non-tty
+	git push -u upstream master >out 2>err &&
+	test_i18ngrep ! "Writing objects" err
+'
+
+test_expect_success 'progress messages go to non-tty (forced)' '
+	ensure_fresh_upstream &&
+
+	# force progress messages to stderr, even though it is non-tty
+	git push -u --progress upstream master >out 2>err &&
+	test_i18ngrep "Writing objects" err
+'
+
+test_expect_success TTY 'push -q suppresses progress' '
+	ensure_fresh_upstream &&
+
+	test_terminal git push -u -q upstream master >out 2>err &&
+	test_i18ngrep ! "Writing objects" err
+'
+
+test_expect_success TTY 'push --no-progress suppresses progress' '
+	ensure_fresh_upstream &&
+
+	test_terminal git push -u --no-progress upstream master >out 2>err &&
+	test_i18ngrep ! "Unpacking objects" err &&
+	test_i18ngrep ! "Writing objects" err
+'
+
+test_expect_success TTY 'quiet push' '
+	ensure_fresh_upstream &&
+
+	test_terminal git push --quiet --no-progress upstream master 2>&1 | tee output &&
+	test_cmp /dev/null output
 '
 
 test_done

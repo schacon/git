@@ -2,9 +2,12 @@
  * Copyright (C) 2008 Linus Torvalds
  */
 #include "cache.h"
+#include "pathspec.h"
+#include "dir.h"
 
 #ifdef NO_PTHREADS
-static void preload_index(struct index_state *index, const char **pathspec)
+static void preload_index(struct index_state *index,
+			  const struct pathspec *pathspec)
 {
 	; /* nothing */
 }
@@ -24,7 +27,7 @@ static void preload_index(struct index_state *index, const char **pathspec)
 struct thread_data {
 	pthread_t pthread;
 	struct index_state *index;
-	const char **pathspec;
+	struct pathspec pathspec;
 	int offset, nr;
 };
 
@@ -34,9 +37,8 @@ static void *preload_thread(void *_data)
 	struct thread_data *p = _data;
 	struct index_state *index = p->index;
 	struct cache_entry **cep = index->cache + p->offset;
-	struct cache_def cache;
+	struct cache_def cache = CACHE_DEF_INIT;
 
-	memset(&cache, 0, sizeof(cache));
 	nr = p->nr;
 	if (nr + p->offset > index->cache_nr)
 		nr = index->cache_nr - p->offset;
@@ -51,7 +53,9 @@ static void *preload_thread(void *_data)
 			continue;
 		if (ce_uptodate(ce))
 			continue;
-		if (!ce_path_match(ce, p->pathspec))
+		if (ce_skip_worktree(ce))
+			continue;
+		if (!ce_path_match(ce, &p->pathspec, NULL))
 			continue;
 		if (threaded_has_symlink_leading_path(&cache, ce->name, ce_namelen(ce)))
 			continue;
@@ -61,10 +65,12 @@ static void *preload_thread(void *_data)
 			continue;
 		ce_mark_uptodate(ce);
 	} while (--nr > 0);
+	cache_def_clear(&cache);
 	return NULL;
 }
 
-static void preload_index(struct index_state *index, const char **pathspec)
+static void preload_index(struct index_state *index,
+			  const struct pathspec *pathspec)
 {
 	int threads, i, work, offset;
 	struct thread_data data[MAX_PARALLEL];
@@ -79,10 +85,12 @@ static void preload_index(struct index_state *index, const char **pathspec)
 		threads = MAX_PARALLEL;
 	offset = 0;
 	work = DIV_ROUND_UP(index->cache_nr, threads);
+	memset(&data, 0, sizeof(data));
 	for (i = 0; i < threads; i++) {
 		struct thread_data *p = data+i;
 		p->index = index;
-		p->pathspec = pathspec;
+		if (pathspec)
+			copy_pathspec(&p->pathspec, pathspec);
 		p->offset = offset;
 		p->nr = work;
 		offset += work;
@@ -97,7 +105,8 @@ static void preload_index(struct index_state *index, const char **pathspec)
 }
 #endif
 
-int read_index_preload(struct index_state *index, const char **pathspec)
+int read_index_preload(struct index_state *index,
+		       const struct pathspec *pathspec)
 {
 	int retval = read_index(index);
 

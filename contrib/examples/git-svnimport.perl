@@ -1,4 +1,4 @@
-#!/usr/bin/perl -w
+#!/usr/bin/perl
 
 # This tool is copyright (c) 2005, Matthias Urlichs.
 # It is released under the Gnu Public License, version 2.
@@ -36,7 +36,7 @@ our($opt_h,$opt_o,$opt_v,$opt_u,$opt_C,$opt_i,$opt_m,$opt_M,$opt_t,$opt_T,
 
 sub usage() {
 	print STDERR <<END;
-Usage: ${\basename $0}     # fetch/update GIT from SVN
+usage: ${\basename $0}     # fetch/update GIT from SVN
        [-o branch-for-HEAD] [-h] [-v] [-l max_rev] [-R repack_each_revs]
        [-C GIT_repository] [-t tagname] [-T trunkname] [-b branchname]
        [-d|-D] [-i] [-u] [-r] [-I ignorefilename] [-s start_chg]
@@ -289,7 +289,7 @@ my $current_rev = $opt_s || 1;
 unless(-d $git_dir) {
 	system("git init");
 	die "Cannot init the GIT db at $git_tree: $?\n" if $?;
-	system("git read-tree");
+	system("git read-tree --empty");
 	die "Cannot init an empty tree: $?\n" if $?;
 
 	$last_branch = $opt_o;

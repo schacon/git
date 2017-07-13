@@ -25,7 +25,7 @@ test_expect_success setup '
 	echo initial >dir1/sub2 &&
 	echo initial >dir2/sub3 &&
 	git add check dir1 dir2 top foo &&
-	test_tick
+	test_tick &&
 	git commit -m initial &&
 
 	echo changed >check &&
@@ -80,11 +80,23 @@ test_expect_success 'change gets noticed' '
 
 '
 
-test_expect_success SYMLINKS 'replace a file with a symlink' '
+test_expect_success 'non-qualified update in subdir updates from the root' '
+	(
+		cd dir1 &&
+		echo even more >>sub2 &&
+		git --literal-pathspecs add -u &&
+		echo even more >>sub2 &&
+		git add -u
+	) &&
+	: >expect &&
+	git diff-files --name-only >actual &&
+	test_cmp expect actual
+'
+
+test_expect_success 'replace a file with a symlink' '
 
 	rm foo &&
-	ln -s top foo &&
-	git add -u -- foo
+	test_ln_s_add top foo
 
 '
 
@@ -124,7 +136,7 @@ test_expect_success 'add -n -u should not add but just report' '
 	after=$(git ls-files -s check top) &&
 
 	test "$before" = "$after" &&
-	test_cmp expect actual
+	test_i18ncmp expect actual
 
 '
 
@@ -149,31 +161,21 @@ test_expect_success 'add -u resolves unmerged paths' '
 	echo 3 >path1 &&
 	echo 2 >path3 &&
 	echo 2 >path5 &&
+
+	# Fail to explicitly resolve removed paths with "git add"
+	test_must_fail git add --no-all path4 &&
+	test_must_fail git add --no-all path6 &&
+
+	# "add -u" should notice removals no matter what stages
+	# the index entries are in.
 	git add -u &&
 	git ls-files -s path1 path2 path3 path4 path5 path6 >actual &&
 	{
 		echo "100644 $three 0	path1"
-		echo "100644 $one 1	path3"
-		echo "100644 $one 1	path4"
-		echo "100644 $one 3	path5"
-		echo "100644 $one 3	path6"
-	} >expect &&
-	test_cmp expect actual &&
-
-	# Bonus tests.  Explicit resolving
-	git add path3 path5 &&
-	test_must_fail git add path4 &&
-	test_must_fail git add path6 &&
-	git rm path4 &&
-	git rm path6 &&
-
-	git ls-files -s "path?" >actual &&
-	{
-		echo "100644 $three 0	path1"
 		echo "100644 $two 0	path3"
 		echo "100644 $two 0	path5"
-	} >expect
-
+	} >expect &&
+	test_cmp expect actual
 '
 
 test_expect_success '"add -u non-existent" should fail' '

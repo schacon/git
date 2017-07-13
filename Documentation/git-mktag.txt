@@ -8,7 +8,8 @@ git-mktag - Creates a tag object
 
 SYNOPSIS
 --------
-'git mktag' < signature_file
+[verse]
+'git mktag'
 
 DESCRIPTION
 -----------
@@ -19,7 +20,8 @@ The output is the new tag's <object> identifier.
 
 Tag Format
 ----------
-A tag signature file has a very simple fixed format: four lines of
+A tag signature file, to be fed to this command's standard input,
+has a very simple fixed format: four lines of
 
   object <sha1>
   type <typename>
@@ -27,19 +29,10 @@ A tag signature file has a very simple fixed format: four lines of
   tagger <tagger>
 
 followed by some 'optional' free-form message (some tags created
-by older git may not have `tagger` line).  The message, when
+by older Git may not have `tagger` line).  The message, when
 exists, is separated by a blank line from the header.  The
-message part may contain a signature that git itself doesn't
+message part may contain a signature that Git itself doesn't
 care about, but that can be verified with gpg.
-
-
-Author
-------
-Written by Linus Torvalds <torvalds@osdl.org>
-
-Documentation
---------------
-Documentation by David Greaves, Junio C Hamano and the git-list <git@vger.kernel.org>.
 
 GIT
 ---

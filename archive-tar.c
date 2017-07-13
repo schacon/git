@@ -2,8 +2,11 @@
  * Copyright (c) 2005, 2006 Rene Scharfe
  */
 #include "cache.h"
+#include "config.h"
 #include "tar.h"
 #include "archive.h"
+#include "streaming.h"
+#include "run-command.h"
 
 #define RECORDSIZE	(512)
 #define BLOCKSIZE	(RECORDSIZE * 20)
@@ -12,6 +15,27 @@ static char block[BLOCKSIZE];
 static unsigned long offset;
 
 static int tar_umask = 002;
+
+static int write_tar_filter_archive(const struct archiver *ar,
+				    struct archiver_args *args);
+
+/*
+ * This is the max value that a ustar size header can specify, as it is fixed
+ * at 11 octal digits. POSIX specifies that we switch to extended headers at
+ * this size.
+ *
+ * Likewise for the mtime (which happens to use a buffer of the same size).
+ */
+#if ULONG_MAX == 0xFFFFFFFF
+#define USTAR_MAX_SIZE ULONG_MAX
+#else
+#define USTAR_MAX_SIZE 077777777777UL
+#endif
+#if TIME_MAX == 0xFFFFFFFF
+#define USTAR_MAX_MTIME TIME_MAX
+#else
+#define USTAR_MAX_MTIME 077777777777ULL
+#endif
 
 /* writes out the whole block, but only if it is full */
 static void write_if_needed(void)
@@ -26,10 +50,9 @@ static void write_if_needed(void)
  * queues up writes, so that all our write(2) calls write exactly one
  * full block; pads writes to RECORDSIZE
  */
-static void write_blocked(const void *data, unsigned long size)
+static void do_write_blocked(const void *data, unsigned long size)
 {
 	const char *buf = data;
-	unsigned long tail;
 
 	if (offset) {
 		unsigned long chunk = BLOCKSIZE - offset;
@@ -50,12 +73,23 @@ static void write_blocked(const void *data, unsigned long size)
 		memcpy(block + offset, buf, size);
 		offset += size;
 	}
+}
+
+static void finish_record(void)
+{
+	unsigned long tail;
 	tail = offset % RECORDSIZE;
 	if (tail)  {
 		memset(block + offset, 0, RECORDSIZE - tail);
 		offset += RECORDSIZE - tail;
 	}
 	write_if_needed();
+}
+
+static void write_blocked(const void *data, unsigned long size)
+{
+	do_write_blocked(data, size);
+	finish_record();
 }
 
 /*
@@ -71,6 +105,33 @@ static void write_trailer(void)
 		memset(block, 0, offset);
 		write_or_die(1, block, BLOCKSIZE);
 	}
+}
+
+/*
+ * queues up writes, so that all our write(2) calls write exactly one
+ * full block; pads writes to RECORDSIZE
+ */
+static int stream_blocked(const unsigned char *sha1)
+{
+	struct git_istream *st;
+	enum object_type type;
+	unsigned long sz;
+	char buf[BLOCKSIZE];
+	ssize_t readlen;
+
+	st = open_istream(sha1, &type, &sz, NULL);
+	if (!st)
+		return error("cannot stream blob %s", sha1_to_hex(sha1));
+	for (;;) {
+		readlen = read_istream(st, buf, sizeof(buf));
+		if (readlen <= 0)
+			break;
+		do_write_blocked(buf, readlen);
+	}
+	close_istream(st);
+	if (!readlen)
+		finish_record();
+	return readlen;
 }
 
 /*
@@ -95,15 +156,29 @@ static void strbuf_append_ext_header(struct strbuf *sb, const char *keyword,
 	strbuf_addch(sb, '\n');
 }
 
+/*
+ * Like strbuf_append_ext_header, but for numeric values.
+ */
+static void strbuf_append_ext_header_uint(struct strbuf *sb,
+					  const char *keyword,
+					  uintmax_t value)
+{
+	char buf[40]; /* big enough for 2^128 in decimal, plus NUL */
+	int len;
+
+	len = xsnprintf(buf, sizeof(buf), "%"PRIuMAX, value);
+	strbuf_append_ext_header(sb, keyword, buf, len);
+}
+
 static unsigned int ustar_header_chksum(const struct ustar_header *header)
 {
-	char *p = (char *)header;
+	const unsigned char *p = (const unsigned char *)header;
 	unsigned int chksum = 0;
-	while (p < header->chksum)
+	while (p < (const unsigned char *)header->chksum)
 		chksum += *p++;
 	chksum += sizeof(header->chksum) * ' ';
 	p += sizeof(header->chksum);
-	while (p < (char *)header + sizeof(struct ustar_header))
+	while (p < (const unsigned char *)header + sizeof(struct ustar_header))
 		chksum += *p++;
 	return chksum;
 }
@@ -111,6 +186,8 @@ static unsigned int ustar_header_chksum(const struct ustar_header *header)
 static size_t get_path_prefix(const char *path, size_t pathlen, size_t maxlen)
 {
 	size_t i = pathlen;
+	if (i > 1 && path[i - 1] == '/')
+		i--;
 	if (i > maxlen)
 		i = maxlen;
 	do {
@@ -119,105 +196,213 @@ static size_t get_path_prefix(const char *path, size_t pathlen, size_t maxlen)
 	return i;
 }
 
+static void prepare_header(struct archiver_args *args,
+			   struct ustar_header *header,
+			   unsigned int mode, unsigned long size)
+{
+	xsnprintf(header->mode, sizeof(header->mode), "%07o", mode & 07777);
+	xsnprintf(header->size, sizeof(header->size), "%011lo", S_ISREG(mode) ? size : 0);
+	xsnprintf(header->mtime, sizeof(header->mtime), "%011lo", (unsigned long) args->time);
+
+	xsnprintf(header->uid, sizeof(header->uid), "%07o", 0);
+	xsnprintf(header->gid, sizeof(header->gid), "%07o", 0);
+	strlcpy(header->uname, "root", sizeof(header->uname));
+	strlcpy(header->gname, "root", sizeof(header->gname));
+	xsnprintf(header->devmajor, sizeof(header->devmajor), "%07o", 0);
+	xsnprintf(header->devminor, sizeof(header->devminor), "%07o", 0);
+
+	memcpy(header->magic, "ustar", 6);
+	memcpy(header->version, "00", 2);
+
+	xsnprintf(header->chksum, sizeof(header->chksum), "%07o", ustar_header_chksum(header));
+}
+
+static void write_extended_header(struct archiver_args *args,
+				  const unsigned char *sha1,
+				  const void *buffer, unsigned long size)
+{
+	struct ustar_header header;
+	unsigned int mode;
+	memset(&header, 0, sizeof(header));
+	*header.typeflag = TYPEFLAG_EXT_HEADER;
+	mode = 0100666;
+	xsnprintf(header.name, sizeof(header.name), "%s.paxheader", sha1_to_hex(sha1));
+	prepare_header(args, &header, mode, size);
+	write_blocked(&header, sizeof(header));
+	write_blocked(buffer, size);
+}
+
 static int write_tar_entry(struct archiver_args *args,
-		const unsigned char *sha1, const char *path, size_t pathlen,
-		unsigned int mode, void *buffer, unsigned long size)
+			   const unsigned char *sha1,
+			   const char *path, size_t pathlen,
+			   unsigned int mode)
 {
 	struct ustar_header header;
 	struct strbuf ext_header = STRBUF_INIT;
+	unsigned int old_mode = mode;
+	unsigned long size, size_in_header;
+	void *buffer;
 	int err = 0;
 
 	memset(&header, 0, sizeof(header));
 
-	if (!sha1) {
-		*header.typeflag = TYPEFLAG_GLOBAL_HEADER;
-		mode = 0100666;
-		strcpy(header.name, "pax_global_header");
-	} else if (!path) {
-		*header.typeflag = TYPEFLAG_EXT_HEADER;
-		mode = 0100666;
-		sprintf(header.name, "%s.paxheader", sha1_to_hex(sha1));
+	if (S_ISDIR(mode) || S_ISGITLINK(mode)) {
+		*header.typeflag = TYPEFLAG_DIR;
+		mode = (mode | 0777) & ~tar_umask;
+	} else if (S_ISLNK(mode)) {
+		*header.typeflag = TYPEFLAG_LNK;
+		mode |= 0777;
+	} else if (S_ISREG(mode)) {
+		*header.typeflag = TYPEFLAG_REG;
+		mode = (mode | ((mode & 0100) ? 0777 : 0666)) & ~tar_umask;
 	} else {
-		if (S_ISDIR(mode) || S_ISGITLINK(mode)) {
-			*header.typeflag = TYPEFLAG_DIR;
-			mode = (mode | 0777) & ~tar_umask;
-		} else if (S_ISLNK(mode)) {
-			*header.typeflag = TYPEFLAG_LNK;
-			mode |= 0777;
-		} else if (S_ISREG(mode)) {
-			*header.typeflag = TYPEFLAG_REG;
-			mode = (mode | ((mode & 0100) ? 0777 : 0666)) & ~tar_umask;
+		return error("unsupported file mode: 0%o (SHA1: %s)",
+			     mode, sha1_to_hex(sha1));
+	}
+	if (pathlen > sizeof(header.name)) {
+		size_t plen = get_path_prefix(path, pathlen,
+					      sizeof(header.prefix));
+		size_t rest = pathlen - plen - 1;
+		if (plen > 0 && rest <= sizeof(header.name)) {
+			memcpy(header.prefix, path, plen);
+			memcpy(header.name, path + plen + 1, rest);
 		} else {
-			return error("unsupported file mode: 0%o (SHA1: %s)",
-					mode, sha1_to_hex(sha1));
+			xsnprintf(header.name, sizeof(header.name), "%s.data",
+				  sha1_to_hex(sha1));
+			strbuf_append_ext_header(&ext_header, "path",
+						 path, pathlen);
 		}
-		if (pathlen > sizeof(header.name)) {
-			size_t plen = get_path_prefix(path, pathlen,
-					sizeof(header.prefix));
-			size_t rest = pathlen - plen - 1;
-			if (plen > 0 && rest <= sizeof(header.name)) {
-				memcpy(header.prefix, path, plen);
-				memcpy(header.name, path + plen + 1, rest);
-			} else {
-				sprintf(header.name, "%s.data",
-				        sha1_to_hex(sha1));
-				strbuf_append_ext_header(&ext_header, "path",
-						path, pathlen);
-			}
-		} else
-			memcpy(header.name, path, pathlen);
+	} else
+		memcpy(header.name, path, pathlen);
+
+	if (S_ISREG(mode) && !args->convert &&
+	    sha1_object_info(sha1, &size) == OBJ_BLOB &&
+	    size > big_file_threshold)
+		buffer = NULL;
+	else if (S_ISLNK(mode) || S_ISREG(mode)) {
+		enum object_type type;
+		buffer = sha1_file_to_archive(args, path, sha1, old_mode, &type, &size);
+		if (!buffer)
+			return error("cannot read %s", sha1_to_hex(sha1));
+	} else {
+		buffer = NULL;
+		size = 0;
 	}
 
-	if (S_ISLNK(mode) && buffer) {
+	if (S_ISLNK(mode)) {
 		if (size > sizeof(header.linkname)) {
-			sprintf(header.linkname, "see %s.paxheader",
-			        sha1_to_hex(sha1));
+			xsnprintf(header.linkname, sizeof(header.linkname),
+				  "see %s.paxheader", sha1_to_hex(sha1));
 			strbuf_append_ext_header(&ext_header, "linkpath",
 			                         buffer, size);
 		} else
 			memcpy(header.linkname, buffer, size);
 	}
 
-	sprintf(header.mode, "%07o", mode & 07777);
-	sprintf(header.size, "%011lo", S_ISREG(mode) ? size : 0);
-	sprintf(header.mtime, "%011lo", (unsigned long) args->time);
+	size_in_header = size;
+	if (S_ISREG(mode) && size > USTAR_MAX_SIZE) {
+		size_in_header = 0;
+		strbuf_append_ext_header_uint(&ext_header, "size", size);
+	}
 
-	sprintf(header.uid, "%07o", 0);
-	sprintf(header.gid, "%07o", 0);
-	strlcpy(header.uname, "root", sizeof(header.uname));
-	strlcpy(header.gname, "root", sizeof(header.gname));
-	sprintf(header.devmajor, "%07o", 0);
-	sprintf(header.devminor, "%07o", 0);
-
-	memcpy(header.magic, "ustar", 6);
-	memcpy(header.version, "00", 2);
-
-	sprintf(header.chksum, "%07o", ustar_header_chksum(&header));
+	prepare_header(args, &header, mode, size_in_header);
 
 	if (ext_header.len > 0) {
-		err = write_tar_entry(args, sha1, NULL, 0, 0, ext_header.buf,
-				ext_header.len);
-		if (err)
-			return err;
+		write_extended_header(args, sha1, ext_header.buf,
+				      ext_header.len);
 	}
 	strbuf_release(&ext_header);
 	write_blocked(&header, sizeof(header));
-	if (S_ISREG(mode) && buffer && size > 0)
-		write_blocked(buffer, size);
+	if (S_ISREG(mode) && size > 0) {
+		if (buffer)
+			write_blocked(buffer, size);
+		else
+			err = stream_blocked(sha1);
+	}
+	free(buffer);
 	return err;
 }
 
-static int write_global_extended_header(struct archiver_args *args)
+static void write_global_extended_header(struct archiver_args *args)
 {
 	const unsigned char *sha1 = args->commit_sha1;
 	struct strbuf ext_header = STRBUF_INIT;
-	int err;
+	struct ustar_header header;
+	unsigned int mode;
 
-	strbuf_append_ext_header(&ext_header, "comment", sha1_to_hex(sha1), 40);
-	err = write_tar_entry(args, NULL, NULL, 0, 0, ext_header.buf,
-			ext_header.len);
+	if (sha1)
+		strbuf_append_ext_header(&ext_header, "comment",
+					 sha1_to_hex(sha1), 40);
+	if (args->time > USTAR_MAX_MTIME) {
+		strbuf_append_ext_header_uint(&ext_header, "mtime",
+					      args->time);
+		args->time = USTAR_MAX_MTIME;
+	}
+
+	if (!ext_header.len)
+		return;
+
+	memset(&header, 0, sizeof(header));
+	*header.typeflag = TYPEFLAG_GLOBAL_HEADER;
+	mode = 0100666;
+	xsnprintf(header.name, sizeof(header.name), "pax_global_header");
+	prepare_header(args, &header, mode, ext_header.len);
+	write_blocked(&header, sizeof(header));
+	write_blocked(ext_header.buf, ext_header.len);
 	strbuf_release(&ext_header);
-	return err;
+}
+
+static struct archiver **tar_filters;
+static int nr_tar_filters;
+static int alloc_tar_filters;
+
+static struct archiver *find_tar_filter(const char *name, int len)
+{
+	int i;
+	for (i = 0; i < nr_tar_filters; i++) {
+		struct archiver *ar = tar_filters[i];
+		if (!strncmp(ar->name, name, len) && !ar->name[len])
+			return ar;
+	}
+	return NULL;
+}
+
+static int tar_filter_config(const char *var, const char *value, void *data)
+{
+	struct archiver *ar;
+	const char *name;
+	const char *type;
+	int namelen;
+
+	if (parse_config_key(var, "tar", &name, &namelen, &type) < 0 || !name)
+		return 0;
+
+	ar = find_tar_filter(name, namelen);
+	if (!ar) {
+		ar = xcalloc(1, sizeof(*ar));
+		ar->name = xmemdupz(name, namelen);
+		ar->write_archive = write_tar_filter_archive;
+		ar->flags = ARCHIVER_WANT_COMPRESSION_LEVELS;
+		ALLOC_GROW(tar_filters, nr_tar_filters + 1, alloc_tar_filters);
+		tar_filters[nr_tar_filters++] = ar;
+	}
+
+	if (!strcmp(type, "command")) {
+		if (!value)
+			return config_error_nonbool(var);
+		free(ar->data);
+		ar->data = xstrdup(value);
+		return 0;
+	}
+	if (!strcmp(type, "remote")) {
+		if (git_config_bool(var, value))
+			ar->flags |= ARCHIVER_REMOTE;
+		else
+			ar->flags &= ~ARCHIVER_REMOTE;
+		return 0;
+	}
+
+	return 0;
 }
 
 static int git_tar_config(const char *var, const char *value, void *cb)
@@ -231,20 +416,79 @@ static int git_tar_config(const char *var, const char *value, void *cb)
 		}
 		return 0;
 	}
-	return git_default_config(var, value, cb);
+
+	return tar_filter_config(var, value, cb);
 }
 
-int write_tar_archive(struct archiver_args *args)
+static int write_tar_archive(const struct archiver *ar,
+			     struct archiver_args *args)
 {
 	int err = 0;
 
-	git_config(git_tar_config, NULL);
-
-	if (args->commit_sha1)
-		err = write_global_extended_header(args);
-	if (!err)
-		err = write_archive_entries(args, write_tar_entry);
+	write_global_extended_header(args);
+	err = write_archive_entries(args, write_tar_entry);
 	if (!err)
 		write_trailer();
 	return err;
+}
+
+static int write_tar_filter_archive(const struct archiver *ar,
+				    struct archiver_args *args)
+{
+	struct strbuf cmd = STRBUF_INIT;
+	struct child_process filter = CHILD_PROCESS_INIT;
+	const char *argv[2];
+	int r;
+
+	if (!ar->data)
+		die("BUG: tar-filter archiver called with no filter defined");
+
+	strbuf_addstr(&cmd, ar->data);
+	if (args->compression_level >= 0)
+		strbuf_addf(&cmd, " -%d", args->compression_level);
+
+	argv[0] = cmd.buf;
+	argv[1] = NULL;
+	filter.argv = argv;
+	filter.use_shell = 1;
+	filter.in = -1;
+
+	if (start_command(&filter) < 0)
+		die_errno("unable to start '%s' filter", argv[0]);
+	close(1);
+	if (dup2(filter.in, 1) < 0)
+		die_errno("unable to redirect descriptor");
+	close(filter.in);
+
+	r = write_tar_archive(ar, args);
+
+	close(1);
+	if (finish_command(&filter) != 0)
+		die("'%s' filter reported error", argv[0]);
+
+	strbuf_release(&cmd);
+	return r;
+}
+
+static struct archiver tar_archiver = {
+	"tar",
+	write_tar_archive,
+	ARCHIVER_REMOTE
+};
+
+void init_tar_archiver(void)
+{
+	int i;
+	register_archiver(&tar_archiver);
+
+	tar_filter_config("tar.tgz.command", "gzip -cn", NULL);
+	tar_filter_config("tar.tgz.remote", "true", NULL);
+	tar_filter_config("tar.tar.gz.command", "gzip -cn", NULL);
+	tar_filter_config("tar.tar.gz.remote", "true", NULL);
+	git_config(git_tar_config, NULL);
+	for (i = 0; i < nr_tar_filters; i++) {
+		/* omit any filters that never had a command configured */
+		if (tar_filters[i]->data)
+			register_archiver(tar_filters[i]);
+	}
 }

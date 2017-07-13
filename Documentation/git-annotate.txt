@@ -7,6 +7,7 @@ git-annotate - Annotate file lines with commit information
 
 SYNOPSIS
 --------
+[verse]
 'git annotate' [options] file [revision]
 
 DESCRIPTION
@@ -22,14 +23,11 @@ familiar command name for people coming from other SCM systems.
 OPTIONS
 -------
 include::blame-options.txt[]
+include::diff-heuristic-options.txt[]
 
 SEE ALSO
 --------
 linkgit:git-blame[1]
-
-AUTHOR
-------
-Written by Ryan Anderson <ryan@michonline.com>.
 
 GIT
 ---

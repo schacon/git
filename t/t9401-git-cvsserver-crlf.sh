@@ -38,39 +38,59 @@ not_present() {
     fi
 }
 
+check_status_options() {
+    (cd "$1" &&
+    GIT_CONFIG="$git_config" cvs -Q status "$2" > "${WORKDIR}/status.out" 2>&1
+    )
+    if [ x"$?" != x"0" ] ; then
+	echo "Error from cvs status: $1 $2" >> "${WORKDIR}/marked.log"
+	return 1;
+    fi
+    got="$(sed -n -e 's/^[ 	]*Sticky Options:[ 	]*//p' "${WORKDIR}/status.out")"
+    expect="$3"
+    if [ x"$expect" = x"" ] ; then
+	expect="(none)"
+    fi
+    test x"$got" = x"$expect"
+    stat=$?
+    echo "cvs status: $1 $2 $stat '$3' '$got'" >> "${WORKDIR}/marked.log"
+    return $stat
+}
+
 cvs >/dev/null 2>&1
 if test $? -ne 1
 then
-    say 'skipping git-cvsserver tests, cvs not found'
+    skip_all='skipping git-cvsserver tests, cvs not found'
     test_done
 fi
 if ! test_have_prereq PERL
 then
-    say 'skipping git-cvsserver tests, perl not available'
+    skip_all='skipping git-cvsserver tests, perl not available'
     test_done
 fi
-"$PERL_PATH" -e 'use DBI; use DBD::SQLite' >/dev/null 2>&1 || {
-    say 'skipping git-cvsserver tests, Perl SQLite interface unavailable'
+perl -e 'use DBI; use DBD::SQLite' >/dev/null 2>&1 || {
+    skip_all='skipping git-cvsserver tests, Perl SQLite interface unavailable'
     test_done
 }
 
 unset GIT_DIR GIT_CONFIG
-WORKDIR=$(pwd)
-SERVERDIR=$(pwd)/gitcvs.git
+WORKDIR=$PWD
+SERVERDIR=$PWD/gitcvs.git
 git_config="$SERVERDIR/config"
 CVSROOT=":fork:$SERVERDIR"
-CVSWORK="$(pwd)/cvswork"
+CVSWORK="$PWD/cvswork"
 CVS_SERVER=git-cvsserver
 export CVSROOT CVS_SERVER
 
 rm -rf "$CVSWORK" "$SERVERDIR"
 test_expect_success 'setup' '
+    git config push.default matching &&
     echo "Simple text file" >textfile.c &&
     echo "File with embedded NUL: Q <- there" | q_to_nul > binfile.bin &&
     mkdir subdir &&
     echo "Another text file" > subdir/file.h &&
     echo "Another binary: Q (this time CR)" | q_to_cr > subdir/withCr.bin &&
-    echo "Mixed up NUL, but marked text: Q <- there" | q_to_nul > mixedUp.c
+    echo "Mixed up NUL, but marked text: Q <- there" | q_to_nul > mixedUp.c &&
     echo "Unspecified" > subdir/unspecified.other &&
     echo "/*.bin -crlf" > .gitattributes &&
     echo "/*.c crlf" >> .gitattributes &&
@@ -129,21 +149,22 @@ test_expect_success 'cvs co (use attributes)' '
 '
 
 test_expect_success 'adding files' '
-    cd cvswork/subdir &&
+    (cd cvswork &&
+    (cd subdir &&
     echo "more text" > src.c &&
     GIT_CONFIG="$git_config" cvs -Q add src.c >cvs.log 2>&1 &&
     marked_as . src.c "" &&
-    echo "psuedo-binary" > temp.bin &&
-    cd .. &&
+    echo "pseudo-binary" > temp.bin
+    ) &&
     GIT_CONFIG="$git_config" cvs -Q add subdir/temp.bin >cvs.log 2>&1 &&
     marked_as subdir temp.bin "-kb" &&
     cd subdir &&
     GIT_CONFIG="$git_config" cvs -Q ci -m "adding files" >cvs.log 2>&1 &&
     marked_as . temp.bin "-kb" &&
     marked_as . src.c ""
+    )
 '
 
-cd "$WORKDIR"
 test_expect_success 'updating' '
     git pull gitcvs.git &&
     echo 'hi' > subdir/newfile.bin &&
@@ -153,9 +174,9 @@ test_expect_success 'updating' '
     git add subdir/newfile.bin subdir/file.h subdir/newfile.c binfile.bin &&
     git commit -q -m "Add and change some files" &&
     git push gitcvs.git >/dev/null &&
-    cd cvswork &&
-    GIT_CONFIG="$git_config" cvs -Q update &&
-    cd .. &&
+    (cd cvswork &&
+    GIT_CONFIG="$git_config" cvs -Q update
+    ) &&
     marked_as cvswork textfile.c "" &&
     marked_as cvswork binfile.bin -kb &&
     marked_as cvswork .gitattributes "" &&
@@ -232,36 +253,52 @@ test_expect_success 'cvs co another copy (guess)' '
     marked_as cvswork2/subdir newfile.c ""
 '
 
+test_expect_success 'cvs status - sticky options' '
+    check_status_options cvswork2 textfile.c "" &&
+    check_status_options cvswork2 binfile.bin -kb &&
+    check_status_options cvswork2 .gitattributes "" &&
+    check_status_options cvswork2 mixedUp.c -kb &&
+    check_status_options cvswork2 multiline.c -kb &&
+    check_status_options cvswork2 multilineTxt.c "" &&
+    check_status_options cvswork2/subdir withCr.bin -kb &&
+    check_status_options cvswork2 subdir/withCr.bin -kb &&
+    check_status_options cvswork2/subdir file.h "" &&
+    check_status_options cvswork2 subdir/file.h "" &&
+    check_status_options cvswork2/subdir unspecified.other "" &&
+    check_status_options cvswork2/subdir newfile.bin "" &&
+    check_status_options cvswork2/subdir newfile.c ""
+'
+
 test_expect_success 'add text (guess)' '
-    cd cvswork &&
+    (cd cvswork &&
     echo "simpleText" > simpleText.c &&
-    GIT_CONFIG="$git_config" cvs -Q add simpleText.c &&
-    cd .. &&
+    GIT_CONFIG="$git_config" cvs -Q add simpleText.c
+    ) &&
     marked_as cvswork simpleText.c ""
 '
 
 test_expect_success 'add bin (guess)' '
-    cd cvswork &&
+    (cd cvswork &&
     echo "simpleBin: NUL: Q <- there" | q_to_nul > simpleBin.bin &&
-    GIT_CONFIG="$git_config" cvs -Q add simpleBin.bin &&
-    cd .. &&
+    GIT_CONFIG="$git_config" cvs -Q add simpleBin.bin
+    ) &&
     marked_as cvswork simpleBin.bin -kb
 '
 
 test_expect_success 'remove files (guess)' '
-    cd cvswork &&
+    (cd cvswork &&
     GIT_CONFIG="$git_config" cvs -Q rm -f subdir/file.h &&
-    cd subdir &&
-    GIT_CONFIG="$git_config" cvs -Q rm -f withCr.bin &&
-    cd ../.. &&
+    (cd subdir &&
+    GIT_CONFIG="$git_config" cvs -Q rm -f withCr.bin
+    )) &&
     marked_as cvswork/subdir withCr.bin -kb &&
     marked_as cvswork/subdir file.h ""
 '
 
 test_expect_success 'cvs ci (guess)' '
-    cd cvswork &&
-    GIT_CONFIG="$git_config" cvs -Q ci -m "add/rm files" >cvs.log 2>&1 &&
-    cd .. &&
+    (cd cvswork &&
+    GIT_CONFIG="$git_config" cvs -Q ci -m "add/rm files" >cvs.log 2>&1
+    ) &&
     marked_as cvswork textfile.c "" &&
     marked_as cvswork binfile.bin -kb &&
     marked_as cvswork .gitattributes "" &&
@@ -278,9 +315,9 @@ test_expect_success 'cvs ci (guess)' '
 '
 
 test_expect_success 'update subdir of other copy (guess)' '
-    cd cvswork2/subdir &&
-    GIT_CONFIG="$git_config" cvs -Q update &&
-    cd ../.. &&
+    (cd cvswork2/subdir &&
+    GIT_CONFIG="$git_config" cvs -Q update
+    ) &&
     marked_as cvswork2 textfile.c "" &&
     marked_as cvswork2 binfile.bin -kb &&
     marked_as cvswork2 .gitattributes "" &&
@@ -304,11 +341,11 @@ test_expect_success 'update/merge full other copy (guess)' '
     git add multilineTxt.c &&
     git commit -q -m "modify multiline file" >> "${WORKDIR}/marked.log" &&
     git push gitcvs.git >/dev/null &&
-    cd cvswork2 &&
+    (cd cvswork2 &&
     sed "s/1/replaced_1/" < multilineTxt.c > ml.temp &&
     mv ml.temp multilineTxt.c &&
-    GIT_CONFIG="$git_config" cvs update > cvs.log 2>&1 &&
-    cd .. &&
+    GIT_CONFIG="$git_config" cvs update > cvs.log 2>&1
+    ) &&
     marked_as cvswork2 textfile.c "" &&
     marked_as cvswork2 binfile.bin -kb &&
     marked_as cvswork2 .gitattributes "" &&

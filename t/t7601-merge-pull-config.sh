@@ -38,6 +38,35 @@ test_expect_success 'merge c1 with c2' '
 	test -f c2.c
 '
 
+test_expect_success 'fast-forward pull succeeds with "true" in pull.ff' '
+	git reset --hard c0 &&
+	test_config pull.ff true &&
+	git pull . c1 &&
+	test "$(git rev-parse HEAD)" = "$(git rev-parse c1)"
+'
+
+test_expect_success 'pull.ff=true overrides merge.ff=false' '
+	git reset --hard c0 &&
+	test_config merge.ff false &&
+	test_config pull.ff true &&
+	git pull . c1 &&
+	test "$(git rev-parse HEAD)" = "$(git rev-parse c1)"
+'
+
+test_expect_success 'fast-forward pull creates merge with "false" in pull.ff' '
+	git reset --hard c0 &&
+	test_config pull.ff false &&
+	git pull . c1 &&
+	test "$(git rev-parse HEAD^1)" = "$(git rev-parse c0)" &&
+	test "$(git rev-parse HEAD^2)" = "$(git rev-parse c1)"
+'
+
+test_expect_success 'pull prevents non-fast-forward with "only" in pull.ff' '
+	git reset --hard c1 &&
+	test_config pull.ff only &&
+	test_must_fail git pull . c3
+'
+
 test_expect_success 'merge c1 with c2 (ours in pull.twohead)' '
 	git reset --hard c1 &&
 	git config pull.twohead ours &&
@@ -109,18 +138,18 @@ test_expect_success 'setup conflicted merge' '
 '
 
 # First do the merge with resolve and recursive then verify that
-# recusive is choosen.
+# recursive is chosen.
 
 test_expect_success 'merge picks up the best result' '
 	git config --unset-all pull.twohead &&
 	git reset --hard c5 &&
-	git merge -s resolve c6
+	test_must_fail git merge -s resolve c6 &&
 	resolve_count=$(conflict_count) &&
 	git reset --hard c5 &&
-	git merge -s recursive c6
+	test_must_fail git merge -s recursive c6 &&
 	recursive_count=$(conflict_count) &&
 	git reset --hard c5 &&
-	git merge -s recursive -s resolve c6
+	test_must_fail git merge -s recursive -s resolve c6 &&
 	auto_count=$(conflict_count) &&
 	test $auto_count = $recursive_count &&
 	test $auto_count != $resolve_count
@@ -129,13 +158,13 @@ test_expect_success 'merge picks up the best result' '
 test_expect_success 'merge picks up the best result (from config)' '
 	git config pull.twohead "recursive resolve" &&
 	git reset --hard c5 &&
-	git merge -s resolve c6
+	test_must_fail git merge -s resolve c6 &&
 	resolve_count=$(conflict_count) &&
 	git reset --hard c5 &&
-	git merge -s recursive c6
+	test_must_fail git merge -s recursive c6 &&
 	recursive_count=$(conflict_count) &&
 	git reset --hard c5 &&
-	git merge c6
+	test_must_fail git merge c6 &&
 	auto_count=$(conflict_count) &&
 	test $auto_count = $recursive_count &&
 	test $auto_count != $resolve_count

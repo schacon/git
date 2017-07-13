@@ -84,5 +84,56 @@ test_expect_success POSIXPERM '--no-verify with non-executable hook' '
 	git commit --no-verify -m "more content"
 
 '
+chmod +x "$HOOK"
+
+# a hook that checks $GIT_PREFIX and succeeds inside the
+# success/ subdirectory only
+cat > "$HOOK" <<EOF
+#!/bin/sh
+test \$GIT_PREFIX = success/
+EOF
+
+test_expect_success 'with hook requiring GIT_PREFIX' '
+
+	echo "more content" >> file &&
+	git add file &&
+	mkdir success &&
+	(
+		cd success &&
+		git commit -m "hook requires GIT_PREFIX = success/"
+	) &&
+	rmdir success
+'
+
+test_expect_success 'with failing hook requiring GIT_PREFIX' '
+
+	echo "more content" >> file &&
+	git add file &&
+	mkdir fail &&
+	(
+		cd fail &&
+		test_must_fail git commit -m "hook must fail"
+	) &&
+	rmdir fail &&
+	git checkout -- file
+'
+
+test_expect_success 'check the author in hook' '
+	write_script "$HOOK" <<-\EOF &&
+	test "$GIT_AUTHOR_NAME" = "New Author" &&
+	test "$GIT_AUTHOR_EMAIL" = "newauthor@example.com"
+	EOF
+	test_must_fail git commit --allow-empty -m "by a.u.thor" &&
+	(
+		GIT_AUTHOR_NAME="New Author" &&
+		GIT_AUTHOR_EMAIL="newauthor@example.com" &&
+		export GIT_AUTHOR_NAME GIT_AUTHOR_EMAIL &&
+		git commit --allow-empty -m "by new.author via env" &&
+		git show -s
+	) &&
+	git commit --author="New Author <newauthor@example.com>" \
+		--allow-empty -m "by new.author via command line" &&
+	git show -s
+'
 
 test_done

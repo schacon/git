@@ -1,4 +1,4 @@
-#!/usr/bin/perl -w
+#!/usr/bin/perl
 #
 # Copyright 2008-2009 Peter Krefting <peter@softwolves.pp.se>
 #
@@ -109,8 +109,8 @@ was available previously is not included in this revision, it will
 be removed.
 
 If an on-disk revision is incomplete, you can point to files from
-a previous revision. There are no restriction as to where the source
-files are located, nor to the names of them.
+a previous revision. There are no restrictions on where the source
+files are located, nor on their names.
 
  [3.files]
  ; the key is the path inside the repository, the value is the path
@@ -140,6 +140,7 @@ by whitespace or other characters.
 
 # Globals
 use strict;
+use warnings;
 use integer;
 my $crlfmode = 0;
 my @revs;

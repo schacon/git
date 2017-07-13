@@ -97,10 +97,10 @@ Chew for reporting this.
 
 v1.04alpha_svn915 7th October 2006:
  * Fixed failure to unlock thread cache list if allocating a new list failed.
-Thanks to Dmitry Chichkov for reporting this. Futher thanks to Aleksey Sanin.
+Thanks to Dmitry Chichkov for reporting this. Further thanks to Aleksey Sanin.
  * Fixed realloc(0, <size>) segfaulting. Thanks to Dmitry Chichkov for
 reporting this.
- * Made config defines #ifndef so they can be overriden by the build system.
+ * Made config defines #ifndef so they can be overridden by the build system.
 Thanks to Aleksey Sanin for suggesting this.
  * Fixed deadlock in nedprealloc() due to unnecessary locking of preferred
 thread mspace when mspace_realloc() always uses the original block's mspace
