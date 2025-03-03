@@ -393,6 +393,7 @@ static int unbundle_from_file(struct repository *r, const char *file)
 	/*
 	 * Convert all refs/heads/ from the bundle into refs/bundles/
 	 * in the local repository.
+	 * FUCK YOU
 	 */
 	strbuf_addstr(&bundle_ref, "refs/bundles/");
 	bundle_prefix_len = bundle_ref.len;
