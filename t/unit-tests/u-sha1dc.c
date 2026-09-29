@@ -7,7 +7,13 @@
 #if defined(SHA1_DC) && !defined(DC_SHA1_EXTERNAL) && !defined(DC_SHA1_NO_ACCEL)
 #define HAVE_SHA1DC_ACCEL
 
+#if defined(DC_SHA1_SUBMODULE)
+#include "sha1collisiondetection/lib/ubc_check.h"
+#else
+#include "sha1dc/ubc_check.h"
+#endif
 #include "sha1dc-accel/sha1.h"
+#include "sha1dc-accel/internal.h"
 
 static uint64_t rng_state;
 
@@ -86,6 +92,76 @@ static void every_backend_agrees_with_sha1dc(void)
 	cl_assert_equal_i(sha1dc_accel_select(orig), 0);
 }
 
+/* Asserts only on a mismatch; clar's assertions are too slow to run 10^5 times. */
+#define check_form(got, want) do { \
+		uint32_t got_ = (got); \
+		if (got_ != (want)) \
+			cl_assert_equal_i(got_, (want)); \
+	} while (0)
+
+/*
+ * Checks every form of the UBC check against sha1dc/'s on `w`, and next to
+ * it, with each bit flipped in turn if `flip`.
+ */
+static void check_ubc_forms(uint32_t w[80], int flip, int avx2)
+{
+	int k;
+
+	for (k = 0; k <= (flip ? 80 * 32 : 0); k++) {
+		uint32_t want;
+
+		if (k)
+			w[(k - 1) / 32] ^= 1u << ((k - 1) % 32);
+		ubc_check(w, &want);
+		check_form(sha1dc_ubc_check_scalar(w), want);
+#ifdef SHA1DC_HAVE_SSE2
+		check_form(sha1dc_ubc_check_sse2(w), want);
+#endif
+#ifdef SHA1DC_HAVE_AVX2
+		if (avx2)
+			check_form(sha1dc_ubc_check_avx2(w), want);
+#endif
+#ifdef SHA1DC_HAVE_NEON
+		check_form(sha1dc_ubc_check_neon(w), want);
+#endif
+		(void)avx2;
+		if (k)
+			w[(k - 1) / 32] ^= 1u << ((k - 1) % 32);
+	}
+}
+
+static void ubc_forms_agree_with_sha1dc(void)
+{
+	uint32_t w[80];
+	int i, k, dv, avx2 = 0;
+
+#ifdef SHA1DC_HAVE_AVX2
+	/* Once: CPUID can take microseconds under a hypervisor. */
+	avx2 = sha1dc_avx2_available();
+#endif
+	rng_seed(2);
+	for (i = 0; i < 20000; i++) {
+		for (k = 0; k < 80; k++)
+			w[k] = rng();
+		check_ubc_forms(w, 0, avx2);
+	}
+
+	/*
+	 * Random schedules rarely get past the vector prefix of a form, so
+	 * look for one that keeps each DV alive, and check around it.
+	 */
+	for (dv = 0; dv < 32; dv++) {
+		uint32_t mask;
+
+		do {
+			for (k = 0; k < 80; k++)
+				w[k] = rng();
+			ubc_check(w, &mask);
+		} while (!(mask & (1u << dv)));
+		check_ubc_forms(w, 1, avx2);
+	}
+}
+
 #endif /* HAVE_SHA1DC_ACCEL */
 
 #ifdef HAVE_SHA1DC_ACCEL
@@ -97,4 +173,9 @@ static void every_backend_agrees_with_sha1dc(void)
 void test_sha1dc__every_backend_agrees_with_sha1dc(void)
 {
 	RUN_OR_SKIP(every_backend_agrees_with_sha1dc);
+}
+
+void test_sha1dc__ubc_forms_agree_with_sha1dc(void)
+{
+	RUN_OR_SKIP(ubc_forms_agree_with_sha1dc);
 }
