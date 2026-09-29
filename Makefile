@@ -568,7 +568,8 @@ include shared.mak
 # submodule.
 #
 # Unless DC_SHA1_EXTERNAL is defined, the built-in code is driven by the
-# block loop in sha1dc-accel/, which gives the same results.
+# faster implementation in sha1dc-accel/, which gives the same results
+# using the CPU's vector units where it has them.
 # Define DC_SHA1_NO_ACCEL to use the sha1collisiondetection code alone.
 #
 # === SHA-256 backend ===
@@ -1536,6 +1537,7 @@ THIRD_PARTY_SOURCES += compat/poll/%
 THIRD_PARTY_SOURCES += compat/regex/%
 THIRD_PARTY_SOURCES += sha1collisiondetection/%
 THIRD_PARTY_SOURCES += sha1dc/%
+THIRD_PARTY_SOURCES += sha1dc-accel/ubc_check.c
 THIRD_PARTY_SOURCES += $(UNIT_TEST_DIR)/clar/%
 THIRD_PARTY_SOURCES += $(UNIT_TEST_DIR)/clar/clar/%
 
@@ -2177,6 +2179,8 @@ ifdef DC_SHA1_NO_ACCEL
 	BASIC_CFLAGS += -DDC_SHA1_NO_ACCEL
 else
 	LIB_OBJS += sha1dc-accel/sha1.o
+	LIB_OBJS += sha1dc-accel/ubc_check.o
+	LIB_OBJS += sha1dc-accel/x86.o
 endif
 	BASIC_CFLAGS += \
 		-DSHA1DC_NO_STANDARD_INCLUDES \

@@ -1,0 +1,499 @@
+diff --git a/codegen/src/c.rs b/codegen/src/c.rs
+new file mode 100644
+index 0000000..fdcd004
+--- /dev/null
++++ b/codegen/src/c.rs
+@@ -0,0 +1,441 @@
++//! Emits every form of the check as one C file, for C projects that want the
++//! same plans as the crate (git's `sha1dc-accel/ubc_check.c`).
++//!
++//! The C side keeps the schedule in step order on every target, `w[t]` at
++//! index `t`, so the x86 forms use `setr` where the Rust ones, over a mirrored
++//! schedule, use `set`. The plans are the crate's, searched with the same
++//! seeds, so the two stay in step.
++
++use std::fmt::Write as _;
++
++use crate::emit::{align, all_groups, dv_expr, highest_read, test_bit, test_const};
++use crate::solve::{Cond, Plan};
++use crate::tail::{Shape, by_dv};
++use crate::ubc::DV_NAMES;
++
++/// Lane initializers on one line each, for C.
++fn c_lanes(bits: &[impl AsRef<str>], width: usize) -> String {
++    let mut out = String::new();
++    for i in 0..width {
++        let value = bits.get(i).map_or("0", AsRef::as_ref);
++        let _ = write!(
++            out,
++            "\n\t\t\t{value}{}",
++            if i + 1 < width { "," } else { "" }
++        );
++    }
++    out
++}
++
++/// The DV bits of a lane as an `int`, which is what `_mm*_setr_epi32` takes.
++fn as_int(bits: &str) -> String {
++    if bits == "0" {
++        "0".to_owned()
++    } else {
++        format!("(int)({bits})")
++    }
++}
++
++fn scalar_prefix(plan: &Plan) -> String {
++    let mut out = String::from(
++        "static inline uint32_t scalar_prefix(const uint32_t *w)\n{\n\tuint32_t mask = 0xFFFFFFFF;\n",
++    );
++    for f in &plan.families {
++        let shift = align(f);
++        for &(i, a, dvs) in &f.members {
++            let bit = test_bit(shift, a);
++            let (near, far) = (i, i + f.offset);
++            let sh = |w: usize, n: i32| {
++                if n == 0 {
++                    format!("w[{w}]")
++                } else {
++                    format!("(w[{w}] >> {n})")
++                }
++            };
++            let x = if shift >= 0 {
++                format!("{} ^ {}", sh(near, bit as i32), sh(far, bit as i32 + shift))
++            } else {
++                format!("{} ^ {}", sh(near, bit as i32 - shift), sh(far, bit as i32))
++            };
++            let keep = if f.clears_on == 1 {
++                format!("(({x}) & 1) - 1")
++            } else {
++                format!("0 - (({x}) & 1)")
++            };
++            let _ = write!(out, "\tmask &= ({keep})\n\t\t| ~({});\n", dv_expr(dvs));
++        }
++    }
++    out.push_str("\treturn mask;\n}\n");
++    out
++}
++
++/// The SSE2 and AVX2 prefixes, which differ in width and names only.
++fn x86_prefix(plan: &Plan, avx2: bool) -> String {
++    let (w, name, target, ty, p) = if avx2 {
++        (8, "avx2", "SHA1DC_TARGET_AVX2", "__m256i", "_mm256_")
++    } else {
++        (4, "sse2", "SHA1DC_TARGET_SSE2", "__m128i", "_mm_")
++    };
++    let si = if avx2 { "si256" } else { "si128" };
++    let load = if avx2 {
++        "_mm256_loadu_si256((const __m256i *)(w + {I}))"
++    } else {
++        "_mm_loadu_si128((const __m128i *)(w + {I}))"
++    };
++    let mut out = String::new();
++    let _ = write!(
++        out,
++        "/* The highest index read is {}. */\n{target}\nstatic uint32_t {name}_prefix(const uint32_t *w)\n{{\n\
++         \tconst {ty} zero = {p}setzero_{si}();\n\t{ty} acc0 = zero, acc1 = zero{};\n",
++        highest_read(plan, w),
++        if avx2 { "" } else { ", acc" }
++    );
++    for (n, (f, g)) in all_groups(plan, w).iter().enumerate() {
++        let base = g[0].0;
++        let acc = format!("acc{}", n % 2);
++        let shift = align(f);
++        let _ = write!(
++            out,
++            "\n\t{{\n\t\t{ty} lo = {};\n\t\t{ty} hi = {};\n",
++            load.replace("{I}", &base.to_string()),
++            load.replace("{I}", &(base + f.offset).to_string())
++        );
++        let x = if shift == 0 {
++            format!("{p}xor_{si}(lo, hi)")
++        } else if shift > 0 {
++            format!("{p}xor_{si}(lo, {p}srli_epi32(hi, {shift}))")
++        } else {
++            format!("{p}xor_{si}({p}srli_epi32(lo, {}), hi)", -shift)
++        };
++        let _ = writeln!(out, "\t\t{ty} x = {x};");
++        // A broadcast where every lane tests the same bit, else a bit per lane.
++        let bits_tested: Vec<Option<u32>> = g.iter().map(|m| m.2).collect();
++        let first = bits_tested.iter().flatten().next().copied().unwrap_or(0);
++        let mask = if bits_tested.iter().flatten().all(|&b| b == first) {
++            format!("{p}set1_epi32(1 << {first})")
++        } else {
++            let lanes: Vec<String> = bits_tested
++                .iter()
++                .map(|b| b.map_or_else(|| "0".to_owned(), |b| format!("(int)(1u << {b})")))
++                .collect();
++            format!("{p}setr_epi32({})", c_lanes(&lanes, w))
++        };
++        let _ = writeln!(out, "\t\t{ty} tested = {p}and_{si}(x, {mask});");
++        let _ = writeln!(out, "\t\t{ty} miss = {p}cmpeq_epi32(tested, zero);");
++        let bits: Vec<String> = g.iter().map(|m| as_int(&m.1)).collect();
++        let _ = writeln!(out, "\t\t{ty} bits = {p}setr_epi32({});", c_lanes(&bits, w));
++        let _ = write!(
++            out,
++            "\t\t{acc} = {p}or_{si}({acc}, {});\n\t}}\n",
++            if f.clears_on == 1 {
++                format!("{p}andnot_{si}(miss, bits)")
++            } else {
++                format!("{p}and_{si}(miss, bits)")
++            }
++        );
++    }
++    if avx2 {
++        out.push_str(
++            "\n\t{\n\t\t__m256i both = _mm256_or_si256(acc0, acc1);\n\
++             \t\t__m128i half = _mm_or_si128(_mm256_castsi256_si128(both),\n\
++             \t\t\t\t\t      _mm256_extracti128_si256(both, 1));\n\
++             \t\thalf = _mm_or_si128(half, _mm_shuffle_epi32(half, 0x4E));\n\
++             \t\thalf = _mm_or_si128(half, _mm_shuffle_epi32(half, 0xB1));\n\
++             \t\treturn ~(uint32_t)_mm_cvtsi128_si32(half);\n\t}\n}\n",
++        );
++    } else {
++        out.push_str(
++            "\n\tacc = _mm_or_si128(acc0, acc1);\n\
++             \tacc = _mm_or_si128(acc, _mm_shuffle_epi32(acc, 0x4E));\n\
++             \tacc = _mm_or_si128(acc, _mm_shuffle_epi32(acc, 0xB1));\n\
++             \treturn ~(uint32_t)_mm_cvtsi128_si32(acc);\n}\n",
++        );
++    }
++    out
++}
++
++fn neon_prefix(plan: &Plan) -> String {
++    const W: usize = 4;
++    let mut out = String::new();
++    let _ = write!(
++        out,
++        "/* The highest index read is {}. */\nstatic uint32_t neon_prefix(const uint32_t *w)\n{{\n\
++         \tuint32x4_t acc0 = vdupq_n_u32(0), acc1 = vdupq_n_u32(0), acc;\n\tuint32x2_t folded;\n",
++        highest_read(plan, W)
++    );
++    for (n, (f, g)) in all_groups(plan, W).iter().enumerate() {
++        let base = g[0].0;
++        let acc = format!("acc{}", n % 2);
++        let shift = align(f);
++        let _ = write!(
++            out,
++            "\n\t{{\n\t\tuint32x4_t lo = vld1q_u32(w + {base});\n\t\tuint32x4_t hi = vld1q_u32(w + {});\n",
++            base + f.offset
++        );
++        let x = if shift == 0 {
++            "veorq_u32(lo, hi)".to_owned()
++        } else if shift > 0 {
++            format!("veorq_u32(lo, vshrq_n_u32(hi, {shift}))")
++        } else {
++            format!("veorq_u32(vshrq_n_u32(lo, {}), hi)", -shift)
++        };
++        let _ = writeln!(out, "\t\tuint32x4_t x = {x};");
++        let mask = test_const(
++            g,
++            W,
++            "vdupq_n_u32",
++            |_| String::new(),
++            |b| format!("1u << {b}"),
++        );
++        let per_lane = mask.is_empty();
++        if per_lane {
++            let lanes: Vec<String> = g
++                .iter()
++                .map(|m| m.2.map_or_else(|| "0".to_owned(), |b| format!("1u << {b}")))
++                .collect();
++            let _ = writeln!(
++                out,
++                "\t\tconst uint32_t test[4] = {{{}\n\t\t}};",
++                c_lanes(&lanes, W)
++            );
++            out.push_str("\t\tuint32x4_t set = vtstq_u32(x, vld1q_u32(test));\n");
++        } else {
++            let mask = mask.replace("(1 << ", "(1u << ");
++            let _ = writeln!(out, "\t\tuint32x4_t set = vtstq_u32(x, {mask});");
++        }
++        let bits: Vec<&str> = g.iter().map(|m| m.1.as_str()).collect();
++        let _ = writeln!(
++            out,
++            "\t\tconst uint32_t dvs[4] = {{{}\n\t\t}};",
++            c_lanes(&bits, W)
++        );
++        let cleared = if f.clears_on == 1 {
++            "vminq_u32(set, vld1q_u32(dvs))"
++        } else {
++            "vqsubq_u32(vld1q_u32(dvs), set)"
++        };
++        let _ = write!(out, "\t\t{acc} = vorrq_u32({acc}, {cleared});\n\t}}\n");
++    }
++    out.push_str(
++        "\n\tacc = vorrq_u32(acc0, acc1);\n\
++         \tfolded = vorr_u32(vget_low_u32(acc), vget_high_u32(acc));\n\
++         \treturn ~vget_lane_u32(vorr_u32(folded, vdup_lane_u32(folded, 1)), 0);\n}\n",
++    );
++    out
++}
++
++/// The table tail, as C.
++fn table_tail(name: &str, plan: &Plan, attrs: &str) -> String {
++    let mut checks: Vec<String> = Vec::new();
++    let mut spans: Vec<String> = Vec::new();
++    for list in by_dv(plan) {
++        let start = checks.len();
++        for c in &list {
++            checks.push(format!("{{ {}, {}, {}, {}, {} }}", c.i, c.a, c.j, c.b, c.c));
++        }
++        spans.push(format!("{{ {start}, {} }}", list.len()));
++    }
++    if checks.is_empty() {
++        return format!(
++            "static inline uint32_t {name}_tail(const uint32_t *w, uint32_t mask)\n{{\n\t(void)w;\n\treturn mask;\n}}\n"
++        );
++    }
++    let mut out = String::new();
++    let _ = write!(
++        out,
++        "static const struct tail_check {name}_tail_checks[{}] = {{\n\t{}\n}};\n\n\
++         static const struct tail_span {name}_tail_spans[32] = {{\n\t{}\n}};\n\n\
++         {attrs}static uint32_t {name}_tail(const uint32_t *w, uint32_t mask)\n{{\n\
++         \treturn run_tail(w, mask, {name}_tail_checks, {name}_tail_spans);\n}}\n",
++        checks.len(),
++        checks.join(",\n\t"),
++        spans.join(",\n\t"),
++    );
++    out
++}
++
++/// The guarded tail, as C.
++fn guarded_tail(name: &str, plan: &Plan) -> String {
++    let lists = by_dv(plan);
++    let mut order: Vec<usize> = (0..32).filter(|&d| !lists[d].is_empty()).collect();
++    if order.is_empty() {
++        return format!(
++            "static inline uint32_t {name}_tail(const uint32_t *w, uint32_t mask)\n{{\n\t(void)w;\n\treturn mask;\n}}\n"
++        );
++    }
++    order.sort_by_key(|&d| (plan.prefix_ranks[d], d));
++    let rare_rank = plan.prefix_ranks[order[0]] + 2;
++    let mut common = String::new();
++    let mut rare = String::new();
++    let mut rare_mask = 0u32;
++    for d in order {
++        if plan.prefix_ranks[d] >= rare_rank {
++            rare_mask |= 1 << d;
++            rare.push_str(&guarded_block(d, &lists[d], "\t\t"));
++        } else {
++            common.push_str(&guarded_block(d, &lists[d], "\t"));
++        }
++    }
++    let mut out = format!(
++        "SHA1DC_NOINLINE\nstatic uint32_t {name}_tail(const uint32_t *w, uint32_t mask)\n{{\n\tuint32_t out = mask, fail;\n"
++    );
++    out.push_str(&common);
++    if rare_mask != 0 {
++        let _ = write!(
++            out,
++            "\t/* The DVs the prefix leaves rarely alive, behind one guard. */\n\tif (mask & ({})) {{\n{rare}\t}}\n",
++            dv_expr(rare_mask)
++        );
++    }
++    out.push_str("\treturn out;\n}\n");
++    out
++}
++
++fn guarded_block(d: usize, list: &[&Cond], indent: &str) -> String {
++    let terms: Vec<String> = list.iter().map(|c| term(c)).collect();
++    let clear = if d == 0 {
++        "~fail".to_owned()
++    } else {
++        format!("~(fail << {d})")
++    };
++    format!(
++        "{indent}if (mask & {}) {{\n{indent}\tfail = ({}) & 1;\n{indent}\tout &= {clear};\n{indent}}}\n",
++        DV_NAMES[d],
++        terms.join(&format!(" |\n{indent}\t\t")),
++    )
++}
++
++fn term(c: &Cond) -> String {
++    let bit = |i: usize, a: u32| {
++        if a == 0 {
++            format!("w[{i}]")
++        } else {
++            format!("(w[{i}] >> {a})")
++        }
++    };
++    let flip = if c.c == 1 { " ^ 1" } else { "" };
++    format!("({} ^ {}{flip})", bit(c.i, c.a), bit(c.j, c.b))
++}
++
++/// The whole C file, from the plans of the four targets, as
++/// `(name, plan, tail shape)`.
++pub fn file(plans: &[(&str, &Plan, Shape)], provenance: &str) -> String {
++    let mut out = String::new();
++    let _ = write!(
++        out,
++        r#"/*
++ * The unavoidable-bitconditions (UBC) check of SHA-1 collision detection,
++ * in one form per instruction set.
++ *
++ * GENERATED FILE -- DO NOT EDIT. It is the output of the code generator of
++ * the "sha1dc" Rust crate by Sam Reis, with a C emitter added:
++ *
++ *   {provenance}
++ *
++ * Its solver picks, for each instruction set, a basis of Stevens and
++ * Shumow's unavoidable bitconditions that fills vector lanes well. A
++ * prefix of vector groups runs on every block; the few blocks that survive
++ * it run a scalar tail.
++ * See sha1.c in this directory.
++ *
++ * To regenerate it, apply codegen-c-emitter.patch from this directory to
++ * that commit of the crate and run, from its top directory:
++ *
++ *   cargo run --release -p sha1dc-codegen -- --c ubc_check.c \
++ *	"https://github.com/srijs/sha1dc (commit 426b4afd)"
++ *
++ * Every form returns the same mask as ubc_check() in sha1dc/ubc_check.c.
++ * The code generator is licensed under the MIT license (or Apache-2.0),
++ * like the original sha1collisiondetection.
++ */
++
++#include "../git-compat-util.h"
++#include "internal.h"
++
++"#
++    );
++    for (n, name) in DV_NAMES.iter().enumerate() {
++        let _ = writeln!(out, "#define {name} ((uint32_t)1 << {n})");
++    }
++    out.push_str(
++        r#"
++struct tail_check {
++	uint8_t i, a, j, b, c;
++};
++
++struct tail_span {
++	uint16_t start;
++	uint8_t len;
++};
++
++/*
++ * Runs the tail checks of each DV still alive in `mask`: bit `a` of w[i]
++ * XOR bit `b` of w[j] must equal `c`, or the DV is ruled out.
++ */
++static inline uint32_t run_tail(const uint32_t *w, uint32_t mask,
++				const struct tail_check *checks,
++				const struct tail_span *spans)
++{
++	uint32_t out = mask, rest = mask;
++	while (rest) {
++		unsigned d = sha1dc_ctz(rest);
++		const struct tail_check *c = checks + spans[d].start;
++		const struct tail_check *end = c + spans[d].len;
++		rest &= rest - 1;
++		for (; c < end; c++) {
++			if ((((w[c->i] >> c->a) ^ (w[c->j] >> c->b)) & 1) != c->c) {
++				out &= ~((uint32_t)1 << d);
++				break;
++			}
++		}
++	}
++	return out;
++}
++"#,
++    );
++
++    for (name, plan, shape) in plans {
++        let (guard, attrs) = match *name {
++            "scalar" => (None, ""),
++            "sse2" => (Some("SHA1DC_HAVE_SSE2"), ""),
++            "avx2" => (Some("SHA1DC_HAVE_AVX2"), ""),
++            "neon" => (Some("SHA1DC_HAVE_NEON"), ""),
++            other => panic!("no C form for {other}"),
++        };
++        let _ = write!(out, "\n/* {name} form */\n\n");
++        if let Some(g) = guard {
++            let _ = writeln!(out, "#ifdef {g}\n");
++        }
++        let prefix = match *name {
++            "scalar" => scalar_prefix(plan),
++            "sse2" => x86_prefix(plan, false),
++            "avx2" => x86_prefix(plan, true),
++            "neon" => neon_prefix(plan),
++            _ => unreachable!(),
++        };
++        out.push_str(&prefix);
++        out.push('\n');
++        let tail = match shape {
++            Shape::Table => table_tail(name, plan, attrs),
++            Shape::Guarded => guarded_tail(name, plan),
++        };
++        out.push_str(&tail);
++        let target = match *name {
++            "sse2" => "SHA1DC_TARGET_SSE2\n",
++            "avx2" => "SHA1DC_TARGET_AVX2\n",
++            _ => "",
++        };
++        let _ = write!(
++            out,
++            "\n{target}uint32_t sha1dc_ubc_check_{name}(const uint32_t w[80])\n{{\n\
++             \tuint32_t mask = {name}_prefix(w);\n\
++             \t/* Every check only clears bits, so an empty mask settles it. */\n\
++             \tif (!mask)\n\t\treturn 0;\n\
++             \treturn {name}_tail(w, mask);\n}}\n"
++        );
++        if let Some(g) = guard {
++            let _ = writeln!(out, "\n#endif /* {g} */");
++        }
++    }
++    out
++}
+diff --git a/codegen/src/main.rs b/codegen/src/main.rs
+index 8916545..272f0a9 100644
+--- a/codegen/src/main.rs
++++ b/codegen/src/main.rs
+@@ -26,6 +26,7 @@
+ //! form against those rules and against each other.
+ 
+ mod avx2;
++mod c;
+ mod emit;
+ mod neon;
+ mod padding;
+@@ -260,6 +261,26 @@ fn main() -> ExitCode {
+             report();
+             return ExitCode::SUCCESS;
+         }
++        Some("--c") => {
++            let path = std::env::args().nth(2).expect("--c needs an output path");
++            let provenance = std::env::args().nth(3).unwrap_or_default();
++            let plans = per_target(plan);
++            let plans: Vec<Plan> = match plans.into_iter().collect::<io::Result<_>>() {
++                Ok(p) => p,
++                Err(e) => {
++                    eprintln!("error: {e}");
++                    return ExitCode::FAILURE;
++                }
++            };
++            let named: Vec<(&str, &Plan, tail::Shape)> = TARGETS
++                .iter()
++                .zip(&plans)
++                .map(|(t, p)| (t.name, p, t.tail))
++                .collect();
++            std::fs::write(&path, c::file(&named, &provenance)).expect("write the C file");
++            println!("wrote {path}");
++            return ExitCode::SUCCESS;
++        }
+         Some("--check") => match check(&default_dir()) {
+             Ok(true) => {
+                 println!("src/ubc_check/ is up to date");
+diff --git a/codegen/src/tail.rs b/codegen/src/tail.rs
+index a005656..51881cd 100644
+--- a/codegen/src/tail.rs
++++ b/codegen/src/tail.rs
+@@ -25,7 +25,7 @@ pub enum Shape {
+ }
+ 
+ /// The checks of each DV, in DV order.
+-fn by_dv(plan: &Plan) -> Vec<Vec<&Cond>> {
++pub(crate) fn by_dv(plan: &Plan) -> Vec<Vec<&Cond>> {
+     (0..32)
+         .map(|d| {
+             let mut v: Vec<&Cond> = plan.tail.iter().filter(|c| c.dvs >> d & 1 == 1).collect();
